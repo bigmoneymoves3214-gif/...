@@ -12171,9 +12171,9 @@ function _0xa299._0xHotbarBuild()
     gui.Parent = game:GetService("CoreGui")
 
     -- Sits below the Chakra Sense notifier so the two stack cleanly when both
-    -- are enabled. That bar is 34 px tall at y 20 as of the 2026-10-22 restyle
-    -- (it was 50), so it now ends at y 54 and this clears it with room spare.
-    -- See _0xa299._0xCSBarH if that height ever changes again.
+    -- are enabled. That bar is 40 px tall at y 20, so it ends at y 60 and this
+    -- clears it. See _0xa299._0xCSBarH if that height changes again - anything
+    -- over 58 starts to collide with this.
     local frame = Instance.new("Frame")
     frame.Position = UDim2.new(0, 0, 0, 78)
     frame.Size = UDim2.new(1, 0, 0, hb.SLOT + 20)
@@ -20579,7 +20579,13 @@ _0xa299._0xc8cb = nil
 -- Shadow is built by hand because the library's own shadow helper is internal
 -- to it and is not on the returned table - same asset and slice, so it matches.
 ---------------------------------------------------------------------
-_0xa299._0xCSBarH = 34
+-- Bar metrics. These are referenced from both the builder and the per-update
+-- resize, so they live here rather than being repeated as literals.
+_0xa299._0xCSBarH    = 40
+_0xa299._0xCSIconSz  = 18
+_0xa299._0xCSPad     = 12
+_0xa299._0xCSGap     = 6   -- icon -> title
+_0xa299._0xCSBarMinW = 250
 
 -- The library's theme, or close-enough fallbacks if it ever changes shape.
 function _0xa299._0xCSTheme()
@@ -20607,11 +20613,15 @@ function _0xa299._0xCSShadow(parent, transparency)
     local s = Instance.new("ImageLabel")
     s.Name = "Shadow"
     s.BackgroundTransparency = 1
-    s.Position = UDim2.new(0, -15, 0, -15)
-    s.Size = UDim2.new(1, 30, 1, 30)
+    -- Wider spread than the library's own 15px shadow, so the bar lifts off
+    -- the game behind it instead of looking pasted on.
+    s.Position = UDim2.new(0, -24, 0, -24)
+    s.Size = UDim2.new(1, 48, 1, 48)
     s.Image = "rbxassetid://6014261993"
     s.ImageColor3 = Color3.new(0, 0, 0)
-    s.ImageTransparency = transparency or 0.3
+    -- A wider spread at the same transparency reads weaker, so this is a touch
+    -- darker than the library's 0.3 to keep it visible.
+    s.ImageTransparency = transparency or 0.25
     s.SliceCenter = Rect.new(49, 49, 450, 450)
     s.ScaleType = Enum.ScaleType.Slice
     s.ZIndex = parent.ZIndex - 1
@@ -20673,19 +20683,20 @@ _0xa299._0xf544 = function()
     _0xa299._0xCSIcon.BackgroundTransparency = 1
     _0xa299._0xCSIcon.Image = C.eye
     _0xa299._0xCSIcon.ImageColor3 = C.accent
-    _0xa299._0xCSIcon.Position = UDim2.new(0, 12, 0, math.floor((H - 2 - 16) / 2))
-    _0xa299._0xCSIcon.Size = UDim2.new(0, 16, 0, 16)
+    local ICON, PAD, GAP = _0xa299._0xCSIconSz, _0xa299._0xCSPad, _0xa299._0xCSGap
+    _0xa299._0xCSIcon.Position = UDim2.new(0, PAD, 0, math.floor((H - 2 - ICON) / 2))
+    _0xa299._0xCSIcon.Size = UDim2.new(0, ICON, 0, ICON)
     _0xa299._0xCSIcon.ZIndex = 101
     _0xa299._0xCSIcon.Parent = _0xa299._0xa885
 
     _0xa299._0xc8d1 = Instance.new("TextLabel")
     _0xa299._0xc8d1.Text = "Chakra Sense"
     _0xa299._0xc8d1.Font = C.bold
-    _0xa299._0xc8d1.TextSize = 14
+    _0xa299._0xc8d1.TextSize = 15
     _0xa299._0xc8d1.TextColor3 = C.text
     _0xa299._0xc8d1.BackgroundTransparency = 1
-    _0xa299._0xc8d1.Position = UDim2.new(0, 34, 0, 0)
-    _0xa299._0xc8d1.Size = UDim2.new(0, 160, 0, H - 2)
+    _0xa299._0xc8d1.Position = UDim2.new(0, PAD + ICON + GAP, 0, 0)
+    _0xa299._0xc8d1.Size = UDim2.new(0, 190, 0, H - 2)
     _0xa299._0xc8d1.TextXAlignment = Enum.TextXAlignment.Left
     _0xa299._0xc8d1.ZIndex = 101
     _0xa299._0xc8d1.Parent = _0xa299._0xa885
@@ -20695,7 +20706,7 @@ _0xa299._0xf544 = function()
     _0xa299._0xc8cb = Instance.new("TextLabel")
     _0xa299._0xc8cb.Text = "CLEAR"
     _0xa299._0xc8cb.Font = C.bold
-    _0xa299._0xc8cb.TextSize = 12
+    _0xa299._0xc8cb.TextSize = 13
     _0xa299._0xc8cb.TextColor3 = C.ok
     _0xa299._0xc8cb.BackgroundTransparency = 1
     _0xa299._0xc8cb.Position = UDim2.new(1, -90, 0, 0)
@@ -20707,7 +20718,7 @@ _0xa299._0xf544 = function()
 
     -- THE HOVER DROPDOWN
     _0xa299._0x7904 = Instance.new("Frame")
-    _0xa299._0x7904.Size = UDim2.new(0, 220, 0, 0)
+    _0xa299._0x7904.Size = UDim2.new(0, _0xa299._0xCSBarMinW, 0, 0)
     _0xa299._0x7904.Position = UDim2.new(0, 0, 1, 6)
     _0xa299._0x7904.BackgroundColor3 = C.panel
     _0xa299._0x7904.BorderSizePixel = 0
@@ -20762,7 +20773,7 @@ function _0xa299._0xCSRow(playerName, stateText, stateColor, C)
     local row = Instance.new("Frame")
     row.Name = playerName
     row.BackgroundTransparency = 1
-    row.Size = UDim2.new(1, 0, 0, 18)
+    row.Size = UDim2.new(1, 0, 0, 20)
     row.ZIndex = 103
     row.Parent = _0xa299._0x7904
 
@@ -20770,19 +20781,19 @@ function _0xa299._0xCSRow(playerName, stateText, stateColor, C)
     eye.BackgroundTransparency = 1
     eye.Image = C.eye
     eye.ImageColor3 = stateColor
-    eye.Position = UDim2.new(0, 0, 0.5, -6)
-    eye.Size = UDim2.new(0, 12, 0, 12)
+    eye.Position = UDim2.new(0, 0, 0.5, -7)
+    eye.Size = UDim2.new(0, 14, 0, 14)
     eye.ZIndex = 104
     eye.Parent = row
 
     local name = Instance.new("TextLabel")
     name.Text = playerName
     name.Font = C.font
-    name.TextSize = 13
+    name.TextSize = 14
     name.TextColor3 = C.text
     name.BackgroundTransparency = 1
-    name.Position = UDim2.new(0, 18, 0, 0)
-    name.Size = UDim2.new(1, -(18 + 68), 1, 0)
+    name.Position = UDim2.new(0, 20, 0, 0)
+    name.Size = UDim2.new(1, -(20 + 74), 1, 0)
     name.TextXAlignment = Enum.TextXAlignment.Left
     name.TextTruncate = Enum.TextTruncate.AtEnd
     name.ZIndex = 104
@@ -20791,16 +20802,16 @@ function _0xa299._0xCSRow(playerName, stateText, stateColor, C)
     local state = Instance.new("TextLabel")
     state.Text = stateText
     state.Font = C.bold
-    state.TextSize = 11
+    state.TextSize = 12
     state.TextColor3 = stateColor
     state.BackgroundTransparency = 1
-    state.Position = UDim2.new(1, -66, 0, 0)
-    state.Size = UDim2.new(0, 66, 1, 0)
+    state.Position = UDim2.new(1, -72, 0, 0)
+    state.Size = UDim2.new(0, 72, 1, 0)
     state.TextXAlignment = Enum.TextXAlignment.Right
     state.ZIndex = 104
     state.Parent = row
 
-    return _0xa299._0xCSTextWidth(playerName, 13, C.font)
+    return _0xa299._0xCSTextWidth(playerName, 14, C.font)
 end
 
 function _0xa299._0xd6dd()
@@ -20835,8 +20846,8 @@ function _0xa299._0xd6dd()
     local count = 0
     for _ in pairs(rows) do count = count + 1 end
 
-    _0xa299._0xc8d1.Text = (count == 1) and "Chakra Sense  1 user"
-                                        or ("Chakra Sense  " .. count .. " users")
+    _0xa299._0xc8d1.Text = (count == 1) and "Chakra Sense: 1 User"
+                                        or ("Chakra Sense: " .. count .. " Users")
     _0xa299._0xa885.Visible = _0xa299._0xdede.enabled and count > 0
 
     -- Bar state: anyone watching -> WATCHED, anyone equipped -> NEARBY,
@@ -20856,14 +20867,15 @@ function _0xa299._0xd6dd()
 
     -- Size the bar to its contents and keep it centred, instead of a fixed
     -- 400 px slab with the text floating in the middle of it.
-    local titleW = _0xa299._0xCSTextWidth(_0xa299._0xc8d1.Text, 14, C.bold)
-    local stateW = _0xa299._0xCSTextWidth(_0xa299._0xc8cb.Text, 12, C.bold)
-    local barW = 12 + 16 + 6 + titleW + 18 + stateW + 12
-    barW = math.max(220, math.floor(barW + 0.5))
+    local titleW = _0xa299._0xCSTextWidth(_0xa299._0xc8d1.Text, 15, C.bold)
+    local stateW = _0xa299._0xCSTextWidth(_0xa299._0xc8cb.Text, 13, C.bold)
+    local PAD, ICON, GAP = _0xa299._0xCSPad, _0xa299._0xCSIconSz, _0xa299._0xCSGap
+    local barW = PAD + ICON + GAP + titleW + 20 + stateW + PAD
+    barW = math.max(_0xa299._0xCSBarMinW, math.floor(barW + 0.5))
     _0xa299._0xa885.Size = UDim2.new(0, barW, 0, H)
     _0xa299._0xa885.Position = UDim2.new(0.5, -math.floor(barW / 2), 0, 20)
     _0xa299._0xc8d1.Size = UDim2.new(0, titleW + 4, 0, H - 2)
-    _0xa299._0xc8cb.Position = UDim2.new(1, -(stateW + 12), 0, 0)
+    _0xa299._0xc8cb.Position = UDim2.new(1, -(stateW + PAD), 0, 0)
     _0xa299._0xc8cb.Size = UDim2.new(0, stateW, 0, H - 2)
 
     -- Rebuild the dropdown rows.
@@ -20878,8 +20890,8 @@ function _0xa299._0xd6dd()
         widest = math.max(widest, _0xa299._0xCSRow(playerName, info[1], info[2], C))
     end
 
-    local dropW = math.max(220, math.min(360, 10 + 18 + widest + 10 + 66 + 10))
-    _0xa299._0x7904.Size = UDim2.new(0, dropW, 0, count * 18 + (count - 1) * 3 + 14)
+    local dropW = math.max(_0xa299._0xCSBarMinW, math.min(380, 10 + 20 + widest + 10 + 72 + 10))
+    _0xa299._0x7904.Size = UDim2.new(0, dropW, 0, count * 20 + (count - 1) * 3 + 14)
 end
 
 _0xa299._0x2008 = nil
