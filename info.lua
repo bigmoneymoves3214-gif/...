@@ -9308,6 +9308,11 @@ local ASCENDED_NAMES = {
     "Ascended Avenger's Outfit",
     "Ascended Biyo Armor",
     "Ascended Brawler's Outfit",
+    -- Added since PRIVATE's list was written; found by comparing it against
+    -- the live folder (29 ascended entries there, 27 in the list). Both are
+    -- self-rigged, so they need no weld data from us.
+    "Ascended Desert Apprentice",
+    "Ascended Desert Master",
     "Ascended Durana Kage",
     "Ascended Durana Outfit",
     "Ascended Fighter's Outfit",
@@ -9515,7 +9520,24 @@ local function clothingBase(name)
     return name
 end
 
+-- WHERE THE OUTFITS ACTUALLY ARE.
+--
+-- PRIVATE looked in `ReplicatedStorage.Clothing` and noted that the server's
+-- own copy at `ServerStorage.App.Clothing` is not visible to the client. On
+-- v1551 neither half of that holds: there is NO ReplicatedStorage.Clothing at
+-- all, and the outfits live at `ReplicatedStorage.App.Clothing` - 78 entries,
+-- 49 plain and 29 ascended, verified live. That is why the picker reported
+-- "not loaded yet": it was looking somewhere that does not exist.
+--
+-- Better still, all 29 ascended entries carry their own `Normal` (and mostly
+-- `Broken`) geometry in that replicated folder, so the ascended path works
+-- from an empty server and the donor-stealing fallback is now rarely needed.
+--
+-- The old path is kept as a fallback in case it moves back.
 local function clothingFolder()
+    local app = _0xa299._0xe08d:FindFirstChild("App")
+    local inApp = app and app:FindFirstChild("Clothing")
+    if inApp then return inApp end
     return _0xa299._0xe08d:FindFirstChild("Clothing")
 end
 
@@ -9649,7 +9671,27 @@ end
 ---------------------------------------------------------------------
 -- Geometry
 ---------------------------------------------------------------------
-local function selfRigged(name)
+-- Is this outfit's stored model self-rigging?
+--
+-- Used ONLY to word the "could not rig it" message - the actual rigging never
+-- consulted this list, because rigFromAttributes already reads the `Part0`
+-- attribute straight off each Motor6D. So self-rigging has always been
+-- detected dynamically and the 17 outfits that work that way (verified live)
+-- all rig correctly even though SELF_RIGGED only names 13 of them.
+--
+-- Takes an optional model so the message can be decided from the real thing
+-- when one is in hand; the name list is the fallback for when it is not,
+-- which is the case at the only call site, where the clone has already been
+-- destroyed.
+local function selfRigged(name, model)
+    if model then
+        for _, d in ipairs(model:GetDescendants()) do
+            if d:IsA("Motor6D") and d:GetAttribute("Part0") ~= nil then
+                return true
+            end
+        end
+        return false
+    end
     for _, pat in ipairs(SELF_RIGGED) do
         if name:find(pat, 1, true) then return true end
     end
@@ -10094,22 +10136,12 @@ end
 ---------------------------------------------------------------------
 -- UI
 ---------------------------------------------------------------------
-local outfitDropdown
-outfitDropdown = _0xa299._0xCLOTHBOX:AddDropdown("Outfit", clothingOptions(), "", function(Value)
+-- Read once at build time, which is enough: App.Clothing is static game
+-- content, not something that changes while you play. (Contrast the Region
+-- dropdown, which does need refreshing - servers genuinely come and go.)
+_0xa299._0xCLOTHBOX:AddDropdown("Outfit", clothingOptions(), "", function(Value)
     Cloth.selected = Value or ""
     if Cloth.enabled then clothApply(true) end
-end)
-
--- The list is read once at build time, and ReplicatedStorage.Clothing may not
--- have replicated yet, so it has to be re-readable.
-_0xa299._0xCLOTHBOX:AddButton("Refresh Outfits", function()
-    local opts = clothingOptions()
-    if #opts == 0 then
-        _0xa299._0x8545:Notify("Clothing", "ReplicatedStorage.Clothing not loaded yet", 3, "warning")
-        return
-    end
-    pcall(function() outfitDropdown:Refresh(opts) end)
-    _0xa299._0x8545:Notify("Clothing", #opts .. " outfits found", 3, "check")
 end)
 
 _0xa299._0xCLOTHBOX:AddToggle("Ascended", false, function(Value)
