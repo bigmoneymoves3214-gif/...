@@ -744,16 +744,19 @@ _0xa299._0xaafb = _0xa299._0xa570:AddSubTab("Mastery")
 --_0xa299._0xLIMT = _0xa299._0xa570:AddSubTab("Limited")
 _0xa299._0x5704 = _0xa299._0xa570:AddSubTab("Progression")
 _0xa299._0x23e7 = _0xa299._0xa570:AddSubTab("Misc")
-_0xa299._0xTBST = _0xa299._0xa570:AddSubTab("Tailed Beast")
+-- DISABLED 2026-10-22: the Tailed Beast Farm was folded into the Boss Farm,
+-- so this whole sub-tab is gone. Pick Shukaku / Matatabi / Isobu in Boss Farm
+-- instead; the beast-specific options live behind Auto Seal Tailed Beast.
+-- _0xa299._0xTBST = _0xa299._0xa570:AddSubTab("Tailed Beast")
 
 -- Farm Boss SubTab Groupboxes
 _0xa299._0xf02e = _0xa299._0xd8ba:AddLeftGroupbox('Boss Farm')
 _0xa299._0xe435 = _0xa299._0xd8ba:AddRightGroupbox('Additional Options')
 _0xa299._0xcddf = _0xa299._0xd8ba:AddRightGroupbox('Options')
 
--- Farm Tailed Beast SubTab Groupboxes
-_0xa299._0x4f39 = _0xa299._0xTBST:AddLeftGroupbox('Tailed Beast Farm')
-_0xa299._0xTBOP = _0xa299._0xTBST:AddRightGroupbox('Rotation Settings')
+-- Farm Tailed Beast SubTab Groupboxes -- DISABLED 2026-10-22 with the sub-tab
+-- _0xa299._0x4f39 = _0xa299._0xTBST:AddLeftGroupbox('Tailed Beast Farm')
+-- _0xa299._0xTBOP = _0xa299._0xTBST:AddRightGroupbox('Rotation Settings')
 -- _0xa299._0xDUAL = _0xa299._0xTBST:AddLeftGroupbox('Dual Farm') -- DISABLED
 
 -- Farm Quest SubTab Groupboxes
@@ -2283,6 +2286,92 @@ function _0xa299._0xWoodDanger()
     if W.model and W.model.Parent then return true, W.radius end
     if tick() < W.holdUntil then return true, W.radius end
     return false, 0
+end
+
+---------------------------------------------------------------------
+-- TAILED BEAST BOMB
+--
+-- Same trick as the Wooden Golem pillars: hook workspace.Debris.ChildAdded so
+-- we react on the frame the server replicates the bomb, with no poll interval
+-- and no animation-relative delay to guess at. The bomb is a Debris child
+-- named "TailedBeastBomb<BeastName>" (gamescript2.txt:12209 weldTailedBeastBomb
+-- clones ServerStorage.Models.<Beast>_TBB, parents it to workspace.Debris and
+-- renames it), so this catches the move even though we do not have its
+-- animation id in the beast config.
+--
+-- Timeline from source: the bomb is welded to the beast's head at the "Start"
+-- keyframe and its Size tweens 0 -> 7 over 3 s; at "Explode" the weld is cut,
+-- it is aimed at the closest enemy AT THAT MOMENT and launched at speed 250;
+-- on Touched it explodes.
+--
+-- BLOCKING DOES NOT STOP THIS MOVE. Worth being explicit, because it is the
+-- opposite of the pillars. The TBB explosion (gamescript2.txt:9244) walks
+-- GetPartBoundsInRadius(pos, 80) and calls createBodyVelocity + RagdollCharacter
+-- + realStun(3) + Damage with NO hurtRequest and NO Guardable check anywhere -
+-- the server never asks whether we were blocking. Contrast Shukaku's Wind
+-- Bullet in the branch just above it, which DOES go through
+-- hurtRequest{Guardable = true} and so is genuinely blockable.
+--
+-- So the thing that actually saves us is the 80-stud radius: be somewhere else.
+-- This forces the corner dodge up immediately and keeps it cycling, because
+-- the bomb is aimed at wherever we are when it launches and then flies
+-- straight - it does not home, so moving after the launch beats standing on
+-- the corner it was aimed at. The block is still fired because it was asked
+-- for and costs little, but it is a courtesy against anything else landing in
+-- the same window, not what stops the bomb. Set _0xTBBBlockHold to 0 to skip it.
+---------------------------------------------------------------------
+_0xa299._0xTBB = { armed = false, conns = {}, holdUntil = 0, blocking = false }
+
+-- Covers the 3 s charge plus the flight. The welded bomb itself is given a 9 s
+-- Debris lifetime, so this is deliberately shorter than the worst case.
+_0xa299._0xTBBDodgeHold  = 6
+_0xa299._0xTBBBlockHold  = 1.5   -- 0 disables the block entirely
+
+function _0xa299._0xTBBArm()
+    local T = _0xa299._0xTBB
+    if T.armed then return end
+    T.armed = true
+
+    local debris = workspace:FindFirstChild("Debris")
+    if not debris then T.armed = false; return end
+
+    table.insert(T.conns, debris.ChildAdded:Connect(function(child)
+        -- "TailedBeastBombShukaku" / "...Matatabi" / "...Isobu". The impact
+        -- effect is a separate Debris child named TBB_Explosion, so a prefix
+        -- test cannot match it by accident.
+        if child.Name:sub(1, 15) ~= "TailedBeastBomb" then return end
+        if not (_0xa299._0x1915 and _0xa299._0x1915.farming) then return end
+        if not _0xa299._0xIsBeast(_0xa299._0x1915.currentBoss) then return end
+
+        -- Force the corner dodge from right here, on the same frame the bomb
+        -- replicated, and cycle corners rather than sitting on one.
+        _0xa299._0xTBB.holdUntil = tick() + _0xa299._0xTBBDodgeHold
+        _0xa299._0x1915.cycleAllCorners = true
+
+        if _0xa299._0xTBBBlockHold <= 0 or _0xa299._0xTBB.blocking then return end
+        _0xa299._0xTBB.blocking = true
+        task.spawn(function()
+            pcall(function()
+                _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataFunction")
+                    :InvokeServer("Block", 2)
+            end)
+            task.wait(_0xa299._0xTBBBlockHold)
+            pcall(function()
+                _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataFunction")
+                    :InvokeServer("EndBlock")
+            end)
+            _0xa299._0xTBB.blocking = false
+        end)
+    end))
+end
+
+function _0xa299._0xTBBDisarm()
+    local T = _0xa299._0xTBB
+    for _, c in ipairs(T.conns) do pcall(function() c:Disconnect() end) end
+    T.conns = {}
+    T.armed = false
+    T.holdUntil = 0
+    T.blocking = false
 end
 
 ---------------------------------------------------------------------
@@ -29951,8 +30040,80 @@ _0xa299._0x1915 = {
     hyperRoarConnection = nil,
     antiDespawnAt = 0,
     parkAt = 0,
-    hakuIcyMirrorActive = false
+    hakuIcyMirrorActive = false,
+
+    -- TAILED BEASTS (Shukaku / Matatabi / Isobu).
+    --
+    -- Moved here from the old standalone Tailed Beast Farm, which is commented
+    -- out further down. The beasts dodge differently from every other boss: a
+    -- higher hover does not get you out of their moves, so instead of raising
+    -- the offset we teleport to one of four arena corners (see
+    -- _0xa299._0xBeastDodge). Everything else - no spinning, no flicker, the
+    -- static hover - stays exactly as the boss farm already does it.
+    onlyTargetInactive = true,   -- skip beasts whose Awake attribute is set
+    targetInnerBeasts = false,   -- target inner beasts (>600 studs from spawn)
+    sealMethod = "Binding Seal", -- "Binding Seal" or "Wood Seal"
+    useInstaCast = false,
+    beastDodging = false,
+    beastDodgeConnection = nil,
+    lastDodgeIndex = 0,
+    cycleAllCorners = false,     -- some moves cover corners, so walk them all
+    cycleCornerIndex = 1,
+    isobuButtonCheckActive = false,
+    -- Danger-animation hold timers. A few moves keep hurting after their
+    -- animation stops, so the dodge is held open past the anim.
+    shukaku4thDangerHoldUntil = 0,
+    shukaku6thDangerHoldUntil = 0,
+    isobu2ndDangerHoldUntil = 0,
+    isobu4thDangerHoldUntil = 0,
+    isobu9thDangerHoldUntil = 0
 }
+
+---------------------------------------------------------------------
+-- TAILED BEAST ARENA DATA
+--
+-- Four corners per arena. Dodging a beast means getting OUT of the arena
+-- centre, not hovering higher, so these are absolute positions rather than an
+-- offset from the beast.
+--
+-- spawn is the beast's normal spawn point; "inner" beasts are the ones that
+-- wander more than 600 studs from it, which is how the farm tells the two
+-- apart (inner beasts drop the Jin cloak).
+---------------------------------------------------------------------
+_0xa299._0xBeastDodge = {
+    Shukaku = {
+        spawn = Vector3.new(1935.261, -125.389, -1191.106),
+        corners = {
+            CFrame.new(2205.196, -125.500, -1072.268),
+            CFrame.new(2198.828, -125.500, -1386.141),
+            CFrame.new(1652.381, -125.500, -1367.527),
+            CFrame.new(1699.317, -125.500, -1021.146)
+        }
+    },
+    Matatabi = {
+        spawn = Vector3.new(305.797, -147.566, -2727.513),
+        corners = {
+            CFrame.new(602.206, -147.576, -2879.849),
+            CFrame.new(18.914, -147.617, -2893.382),
+            CFrame.new(45.084, -147.617, -2536.104),
+            CFrame.new(566.741, -147.617, -2574.296)
+        }
+    },
+    Isobu = {
+        spawn = Vector3.new(-3430.300, -389.077, -792.727),
+        corners = {
+            CFrame.new(-3268.657, -389.077, -520.274),
+            CFrame.new(-3637.084, -389.077, -527.400),
+            CFrame.new(-3614.851, -389.077, -1059.534),
+            CFrame.new(-3253.979, -389.072, -1027.514)
+        }
+    }
+}
+
+-- Is this boss one of the three tailed beasts?
+function _0xa299._0xIsBeast(name)
+    return name ~= nil and _0xa299._0xBeastDodge[name] ~= nil
+end
 
 ---------------------------------------------------------------------
 -- BOSS DISCOVERY UNDER STREAMING (v1550)
@@ -29999,6 +30160,78 @@ end
 -- selected up front and only then decide what is spawned. Throttled, since a
 -- boss that is genuinely dead stays dead for a while.
 _0xa299._0xSweepAt = 0
+
+---------------------------------------------------------------------
+-- GO AND LOOK  (the sweep is not enough on its own)
+--
+-- RequestStreamAroundAsync is RANGE LIMITED. Measured 2026-10-22 from 2721
+-- (Shukaku), 2981 (Matatabi) and 3241 (Isobu) studs: every call returned "ok"
+-- in 186-242 ms having delivered essentially NOTHING - 0 to 1 parts within 300
+-- studs of the arena anchor and no ground under it, against 2382 parts within
+-- 300 studs of the player at the same moment. The one part that did arrive was
+-- a Locations marker, not arena geometry.
+--
+-- So the up-front sweep only helps for arenas we are already near. Streaming
+-- follows the player's REAL position, which means the only thing that brings a
+-- cross-map boss in is going there. That is what this does: when a boss we do
+-- not spawn ourselves cannot be found, travel to its arena with _0xSTP (which
+-- pre-streams and holds position until the floor exists) and look again before
+-- concluding it is not in the server.
+--
+-- This is what made the old Tailed Beast Farm report beasts as missing when
+-- they were in the server all along - the beast arenas are in far corners of
+-- the map, so they were never once within sweep range.
+--
+-- Only fires when the boss is ALREADY not found, so it cannot change anything
+-- for a boss that the sweep or plain proximity already resolved.
+---------------------------------------------------------------------
+_0xa299._0xArenaRevisit = 20   -- seconds before walking to the same arena again
+
+-- Bosses the farm spawns itself; those already travel to their spawn point.
+_0xa299._0xSpawnableBosses = {
+    ["Lava Rosa"] = true,
+    ["Manda"] = true,
+    ["Barbarit The Rose"] = true,
+}
+
+function _0xa299._0xVisitArena(bossName, config)
+    local S = _0xa299._0x1915
+    local anchor = config and (config.streamPos or config.rewardspos or config.spawnPosition)
+    if not anchor then return nil end
+
+    -- This yields, and the boss search runs inside the Heartbeat handler, so
+    -- Heartbeat will re-enter the search while we are still travelling. One
+    -- visit at a time, or two frames would send us to two different arenas.
+    if S.arenaVisiting then return nil end
+
+    -- Don't ping-pong between arenas either: one visit per boss per window.
+    S.arenaVisitAt = S.arenaVisitAt or {}
+    local now = tick()
+    if now - (S.arenaVisitAt[bossName] or 0) < _0xa299._0xArenaRevisit then
+        return nil
+    end
+    S.arenaVisitAt[bossName] = now
+
+    if _0xa299._0xdc0f then _0xa299._0xdc0f("waiting", bossName, "") end
+
+    S.arenaVisiting = true
+    local found = nil
+    pcall(function()
+        _0xa299._0xSTP(anchor)
+        task.wait(0.4)
+        found = _0xa299._0xBossPresent(config)
+
+        -- Nothing there after all. Don't leave the character parked in a far
+        -- arena where anyone can see it - the caller will either try the next
+        -- boss or server hop, and both want us back at the safespot.
+        if not found then
+            _0xa299._0xSTP(_0xa299._0xdde4())
+        end
+    end)
+    S.arenaVisiting = false
+
+    return found
+end
 
 function _0xa299._0xStreamAllBosses(force)
     if not force and (tick() - _0xa299._0xSweepAt) < 5 then return false end
@@ -30874,6 +31107,282 @@ function _0xa299._0xGaaraRoamTick(bossHrp, dangerActive)
     return nil
 end
 
+---------------------------------------------------------------------
+-- TAILED BEAST DODGING
+--
+-- Ported from the standalone Tailed Beast Farm. The beasts are the one case
+-- where the boss farm's "hover higher" dodge does not work - their moves cover
+-- the whole arena centre at any height - so a dodge here means teleporting to
+-- an arena corner instead.
+--
+-- Two shapes of dodge:
+--   * normal      - sit on the corner FARTHEST from the beast, skipping the
+--                   one nearest it and the one we used last, so a move that
+--                   tracks us does not keep landing on the same spot.
+--   * cycleAllCorners - a few moves sweep the corners too, so instead we walk
+--                   all four in order and never sit still.
+--
+-- Several moves keep hurting after their animation has stopped playing, which
+-- is what the hold timers are for: once such an anim is seen, the dodge is
+-- held open for a fixed number of seconds regardless of the animation.
+---------------------------------------------------------------------
+
+-- Is a danger animation (or its hold window) active right now? Also maintains
+-- the hold timers and the cycle-all-corners flag.
+function _0xa299._0xBeastDangerActive(beastName, config, bossHumanoid)
+    local S = _0xa299._0x1915
+    local now = tick()
+
+    -- Tailed Beast Bomb, caught off the instance replicating rather than off an
+    -- animation, so it wins before any anim check runs. See _0xa299._0xTBBArm.
+    if not _0xa299._0xTBB.armed then _0xa299._0xTBBArm() end
+    if now < (_0xa299._0xTBB.holdUntil or 0) then
+        S.cycleAllCorners = true
+        return true
+    end
+
+    if not (config and bossHumanoid) then return false end
+    local animator = bossHumanoid:FindFirstChildOfClass("Animator")
+    if not animator then return false end
+
+    local dangerTime = config.dangerTime or 0.2
+
+    -- An anim counts once it is past its windup and before it has wound down.
+    local function playing(animId)
+        if not animId then return false end
+        for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+            if track.Animation.AnimationId == animId then
+                if track.TimePosition > dangerTime and track.TimePosition < 2.7 then
+                    return true
+                end
+            end
+        end
+        return false
+    end
+
+    -- Order matters only in that the first match wins; every one of these is
+    -- the same dodge, so there is nothing to prioritise between them.
+    if playing(config.dangerAnim) then return true end
+
+    if playing(config.secondDangerAnim) then
+        if beastName == "Isobu" then S.isobu2ndDangerHoldUntil = now + 6 end
+        return true
+    end
+
+    if playing(config.thirdDangerAnim) then return true end
+
+    if playing(config.fourthDangerAnim) then
+        if beastName == "Matatabi" then
+            S.matatabi4thDangerHoldUntil = now + 9
+            S.cycleAllCorners = true
+        elseif beastName == "Shukaku" then
+            S.shukaku4thDangerHoldUntil = now + 9
+            S.cycleAllCorners = true
+        elseif beastName == "Isobu" then
+            S.isobu4thDangerHoldUntil = now + 9
+        end
+        return true
+    end
+
+    if playing(config.fifthDangerAnim) then return true end
+
+    if playing(config.sixthDangerAnim) then
+        if beastName == "Shukaku" then S.shukaku6thDangerHoldUntil = now + 5 end
+        return true
+    end
+
+    if playing(config.seventhDangerAnim) then return true end
+    if playing(config.eighthDangerAnim) then return true end
+
+    if playing(config.ninthDangerAnim) then
+        if beastName == "Isobu" then
+            S.isobu9thDangerHoldUntil = now + 6
+            S.cycleAllCorners = true
+        end
+        return true
+    end
+
+    -- No anim playing: are we still inside a hold window?
+    if beastName == "Matatabi" and now < (S.matatabi4thDangerHoldUntil or 0) then
+        S.cycleAllCorners = true
+        return true
+    end
+    if beastName == "Shukaku" then
+        if now < (S.shukaku4thDangerHoldUntil or 0) then
+            S.cycleAllCorners = true
+            return true
+        end
+        if now < (S.shukaku6thDangerHoldUntil or 0) then return true end
+    end
+    if beastName == "Isobu" then
+        if now < (S.isobu9thDangerHoldUntil or 0) then
+            S.cycleAllCorners = true
+            return true
+        end
+        if now < (S.isobu4thDangerHoldUntil or 0) then return true end
+        if now < (S.isobu2ndDangerHoldUntil or 0) then return true end
+    end
+
+    return false
+end
+
+-- Which corner should we be on? nil means "no dodge, farm normally".
+function _0xa299._0xBeastDodgeTick(beastName, config, bossHumanoid, bossHrp)
+    local S = _0xa299._0x1915
+    local arena = _0xa299._0xBeastDodge[beastName]
+
+    if not _0xa299._0xBeastDangerActive(beastName, config, bossHumanoid) then
+        -- Dodge over: clear the cycle so the next one starts from the corner
+        -- farthest from the beast rather than mid-rotation.
+        if S.beastDodging then
+            S.beastDodging = false
+            S.cycleAllCorners = false
+            S.cycleCornerIndex = 1
+        end
+        return nil
+    end
+
+    -- No corners defined for this beast: fall back to the safespot, which is at
+    -- least out of the arena.
+    if not (arena and arena.corners and #arena.corners > 0) then
+        return _0xa299._0xdde4()
+    end
+
+    local corners = arena.corners
+    S.beastDodging = true
+
+    local bestIndex
+    if S.cycleAllCorners then
+        bestIndex = S.cycleCornerIndex or 1
+        S.cycleCornerIndex = (bestIndex % #corners) + 1
+    else
+        local beastPos = bossHrp and bossHrp.Position or Vector3.zero
+
+        -- The corner nearest the beast is the one to avoid.
+        local closestIndex, closestDistance = 1, math.huge
+        for i, cf in ipairs(corners) do
+            local d = (cf.Position - beastPos).Magnitude
+            if d < closestDistance then
+                closestDistance, closestIndex = d, i
+            end
+        end
+
+        -- Of what is left, take the farthest, and not the one we just used.
+        bestIndex = nil
+        local bestDistance = -1
+        for i, cf in ipairs(corners) do
+            if i ~= closestIndex and i ~= S.lastDodgeIndex then
+                local d = (cf.Position - beastPos).Magnitude
+                if d > bestDistance then
+                    bestDistance, bestIndex = d, i
+                end
+            end
+        end
+
+        -- Everything excluded (two corners, or we are already on the only
+        -- other one): settle for anything that is not nearest the beast.
+        if not bestIndex then
+            for i = 1, #corners do
+                if i ~= closestIndex then
+                    bestIndex = i
+                    break
+                end
+            end
+        end
+        bestIndex = bestIndex or 1
+    end
+
+    S.lastDodgeIndex = bestIndex
+    return corners[bestIndex]
+end
+
+---------------------------------------------------------------------
+-- ISOBU BUTTONS
+--
+-- Isobu deactivates the six buttons around its arena; until they are pressed
+-- again it takes no damage. The game's own client gates activation on being
+-- within 30 studs of the button AND the button reading deactivated
+-- (gamescript.txt:6716), but both of those are CLIENT checks - firing the
+-- remote skips them, same as startSkill.
+--
+-- The old beast farm teleported to each button and then waited 1.5s before
+-- moving on, which with six buttons took over ten seconds of not farming. Here
+-- the teleport stays (cheap, and it keeps us correct if the server ever does
+-- revalidate the distance) but the wait is only long enough for the new
+-- position to replicate, and the whole pass finishes well under 1.5s. A single
+-- re-fire pass at the end catches anything that did not take.
+---------------------------------------------------------------------
+_0xa299._0xIsobuSettle = 0.08   -- seconds between teleport and firing
+
+function _0xa299._0xIsobuDeadButtons()
+    local folder = workspace:FindFirstChild("IsobuButtons")
+    if not folder then return nil end
+    local dead = {}
+    for _, button in ipairs(folder:GetChildren()) do
+        if button.Name == "IsobuButton" then
+            local activated = button:FindFirstChild("Activated")
+            if activated and activated.Value == false then
+                dead[#dead + 1] = button
+            end
+        end
+    end
+    return dead
+end
+
+-- The caller latches isobuButtonCheckActive before spawning this, so it is
+-- this function's job to clear it on every exit path.
+function _0xa299._0xIsobuPressButtons()
+    local S = _0xa299._0x1915
+
+    local dead = _0xa299._0xIsobuDeadButtons()
+    if not dead or #dead == 0 then
+        S.isobuButtonCheckActive = false
+        return
+    end
+
+    S.isobuButtonCheckActive = true
+    _0xa299._0x8545:Notify("Farm", "Pressing " .. #dead .. " buttons", 2, "info")
+
+    -- Stand the corner dodge down; we are leaving the arena anyway.
+    S.beastDodging = false
+    S.cycleAllCorners = false
+
+    -- Wrapped so the latch is released even if something in here throws. If it
+    -- leaked, positioning would return early on every frame from then on and
+    -- the farm would sit still for good.
+    pcall(function()
+        local DataEvent = _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataEvent")
+
+        local function press(button)
+            local char = _0xa299._0x396d.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            local main = button:FindFirstChild("Main")
+            if not (hrp and main) then return end
+
+            hrp.CFrame = main.CFrame + Vector3.new(0, 3, 0)
+            task.wait(_0xa299._0xIsobuSettle)
+            pcall(function() DataEvent:FireServer("ActivateButton", button) end)
+        end
+
+        for _, button in ipairs(dead) do
+            if not S.farming then break end
+            press(button)
+        end
+
+        -- One cleanup pass for any that are still down.
+        if S.farming then
+            task.wait(_0xa299._0xIsobuSettle)
+            local still = _0xa299._0xIsobuDeadButtons()
+            for _, button in ipairs(still or {}) do
+                if not S.farming then break end
+                press(button)
+            end
+        end
+    end)
+
+    S.isobuButtonCheckActive = false
+end
+
 _0xa299._0x5ecb = {
     ["Tairock"] = {
         workspaceName = "Tairock",
@@ -30962,6 +31471,9 @@ _0xa299._0x5ecb = {
         thirdDangerAnim = "rbxassetid://81192083766325",
         fourthDangerAnim = "rbxassetid://109359185160118",
         fifthDangerAnim = "rbxassetid://129209861939680",
+        -- Was missing here; the standalone beast farm had it and the move it
+        -- covers needs a 5s held dodge.
+        sixthDangerAnim = "rbxassetid://101042044028411",
         dangerTime = 0.05
     },
     ["Matatabi"] = {
@@ -30983,7 +31495,10 @@ _0xa299._0x5ecb = {
         offset = 35,
         rewards = "IsobuRewards",
         rewardspos = CFrame.new(-3574.024, -389.077, -767.108),
-        dangerAnim = "rbxassetid://731180485692142", -- Remove the last 2, this is to phony remove it if anything, its the water spike move or wtv
+        -- Real id restored. It had two digits appended to disable it, because
+        -- hovering higher does not dodge the water spike move - now that the
+        -- beasts dodge by leaving the arena instead, it works.
+        dangerAnim = "rbxassetid://73118048569214",
         dangerAnimOffset = 40,
         secondDangerAnim = "rbxassetid://137939762816920",
         thirdDangerAnim = "rbxassetid://93108042784521",
@@ -31236,8 +31751,45 @@ function _0xa299._0xe54e()
             if not foundBoss and config.alternateName then
                 foundBoss = workspace:FindFirstChild(config.alternateName)
             end
-            
+
+            -- Nothing found, and this is not a boss we spawn ourselves: it may
+            -- simply be too far away for the sweep to have reached, which is
+            -- the normal case for the tailed beast arenas. Go and look before
+            -- writing it off. See _0xa299._0xVisitArena.
+            if not foundBoss and not _0xa299._0xSpawnableBosses[bossName] then
+                foundBoss = _0xa299._0xVisitArena(bossName, config)
+            end
+
+
             if foundBoss then
+                -- TAILED BEASTS: two filters, both from the old beast farm.
+                --
+                -- Awake means somebody has already started this beast, so with
+                -- "Only Target Unstarted" on we behave as if it was not found
+                -- at all - which lets the farm's own no-boss server hop handle
+                -- it instead of needing its own hop path.
+                --
+                -- Inner beasts are the ones that have wandered more than 600
+                -- studs from their spawn (they drop the Jin cloak); the toggle
+                -- picks which of the two kinds we want. This supersedes the
+                -- old per-boss Matatabi distance check, which used 400 studs
+                -- and would have rejected every inner Matatabi.
+                if _0xa299._0xIsBeast(bossName) then
+                    if _0xa299._0x1915.onlyTargetInactive and foundBoss:GetAttribute("Awake") == true then
+                        continue
+                    end
+
+                    local arena = _0xa299._0xBeastDodge[bossName]
+                    local beastHrp = foundBoss:FindFirstChild("HumanoidRootPart")
+                        or foundBoss:FindFirstChild("Torso")
+                    if arena and beastHrp then
+                        local isInner = (beastHrp.Position - arena.spawn).Magnitude > 600
+                        if isInner ~= _0xa299._0x1915.targetInnerBeasts then
+                            continue
+                        end
+                    end
+                end
+
                 -- Special distance check for Manda
                 if bossName == "Manda" then
                     local mandaSpawnLocation = Vector3.new(1536.32007, -535.5, 717.51001)
@@ -31254,21 +31806,10 @@ function _0xa299._0xe54e()
                             return _0xa299._0x98c6(foundBoss, bossName, config, bossHrp)
                         end
                     end
-                elseif bossName == "Matatabi" then
-                    -- Special distance check for Matatabi
-                    local matatabiSpawnLocation = Vector3.new(304.460, -147.566, -2726.306)
-                    local bossHrp = foundBoss:FindFirstChild("HumanoidRootPart") or foundBoss:FindFirstChild("Torso")
-                    if not bossHrp then
-                        bossHrp = foundBoss:WaitForChild("HumanoidRootPart", 2) or foundBoss:WaitForChild("Torso", 2)
-                    end
-                    
-                    if bossHrp then
-                        local distance = (bossHrp.Position - matatabiSpawnLocation).Magnitude
-                        if distance > 400 then
-                        else
-                            return _0xa299._0x98c6(foundBoss, bossName, config, bossHrp)
-                        end
-                    end
+                -- Matatabi's old 400-stud spawn check lived here. The tailed
+                -- beast gate above replaced it: it does the same job with the
+                -- 600-stud inner/outer split, for all three beasts, and
+                -- respects the Target Inner Beasts toggle.
                 elseif bossName == "Barbarit The Rose" then
                     -- Special distance check for Barbarit The Rose
                     local barbaritSpawnLocation = Vector3.new(-1020.713, 261.861, -1455.114)
@@ -33221,16 +33762,39 @@ function _0xa299._0xa94c()
                         end
                     end
                     
+                    -- SEAL PACKET SHAPE. The game always sends FIVE args:
+                    --   FireServer("startSkill", name, Vector3, requirement, button)
+                    -- (gamescript.txt:2565 -> "startSkill", skillInUse3, u153,
+                    -- v157, p148). arg3 is u1.Hit.p, a VECTOR3 not a CFrame;
+                    -- arg4 is the customRequirement result, so true means "the
+                    -- requirement passed"; arg5 is the button the skill is
+                    -- bound to. Both seals are MouseButton = 1 in the skills
+                    -- module (gamescript2.txt:33111 Binding Seal, Handsigns 4;
+                    -- Wood Seal, Handsigns 3) - never MouseButton2, which the
+                    -- real client actually REFUSES for a handsign skill
+                    -- (gamescript.txt:2219).
+                    --
+                    -- This used to send 3 args with a CFrame on the default
+                    -- path and MouseButton2 on the insta-cast path. Arity on
+                    -- these remotes is not cosmetic - a mismatched call was a
+                    -- confirmed ban cause in v1550 - so both now send exactly
+                    -- what a real cast sends.
                     pcall(function()
-                        if _0xa299._0xf9c2.sealMethod == "Wood Seal" then
-                            _0xa299._0xe08d.Events.DataEvent:FireServer("startSkill", "Wood Seal")
-                        elseif _0xa299._0xf9c2.useInstaCast then
-                            local myPos = hrp.Position
-                            _0xa299._0xe08d.Events.DataEvent:FireServer("startSkill", "Binding Seal", Vector3.new(myPos.X, myPos.Y, myPos.Z), true, "MouseButton2")
-                        else
-                            _0xa299._0xe08d.Events.DataEvent:FireServer("startSkill", "Binding Seal", hrp.CFrame)
+                        local DataEvent = _0xa299._0xe08d.Events.DataEvent
+                        local skill = (_0xa299._0x1915.sealMethod == "Wood Seal")
+                            and "Wood Seal" or "Binding Seal"
+                        local aimAt = hrp.Position
+
+                        DataEvent:FireServer("startSkill", skill,
+                            Vector3.new(aimAt.X, aimAt.Y, aimAt.Z), true, "MouseButton1")
+
+                        -- The client's hold loop releases every skill that has
+                        -- no NoHold flag, and neither seal sets one, so a real
+                        -- cast is always followed by a release. Insta Cast is
+                        -- the option to skip it and fire again immediately.
+                        if not _0xa299._0x1915.useInstaCast then
                             task.wait()
-                            _0xa299._0xe08d.Events.DataEvent:FireServer("ReleaseSkill")
+                            DataEvent:FireServer("ReleaseSkill")
                         end
                     end)
                     
@@ -33705,6 +34269,40 @@ function _0xa299._0xa94c()
                 return
             end
         end
+
+        -- TAILED BEASTS. Two things take over positioning entirely:
+        --   * Isobu's buttons - it is immune until they are pressed, so there
+        --     is no point standing on it. Runs as its own task because it
+        --     needs to wait between teleports and this is a Heartbeat.
+        --   * the corner dodge - the beasts' moves cover the arena centre at
+        --     any height, so extraOffset is useless against them and is
+        --     cleared rather than left to push us out of melee range.
+        if _0xa299._0xIsBeast(_0xa299._0x1915.currentBoss) then
+            if _0xa299._0x1915.isobuButtonCheckActive then
+                return
+            end
+
+            if _0xa299._0x1915.currentBoss == "Isobu" then
+                local dead = _0xa299._0xIsobuDeadButtons()
+                if dead and #dead > 0 then
+                    -- Latch BEFORE spawning. This is a Heartbeat, so the next
+                    -- frame would otherwise spawn a second presser before the
+                    -- first one got as far as setting the flag itself.
+                    _0xa299._0x1915.isobuButtonCheckActive = true
+                    task.spawn(_0xa299._0xIsobuPressButtons)
+                    return
+                end
+            end
+
+            local cornerCF = _0xa299._0xBeastDodgeTick(
+                _0xa299._0x1915.currentBoss, config, bossHumanoid, bossHrp)
+            if cornerCF then
+                hrp.CFrame = cornerCF
+                return
+            end
+
+            extraOffset = 0
+        end
         
         -- Haku Boss: check Icy Mirror cube transparency (visible = go into boss, invisible = farm normally)
         if _0xa299._0x1915.currentBoss == "Haku" then
@@ -33796,11 +34394,27 @@ function _0xa299._0x6ce0()
     -- means stopping the farm does not silently disarm the feature until the
     -- toggle is flipped again. Only the one-shot latch is cleared.
     _0xa299._0x1915.shutdownFired = false
-    
+
     -- Reset forcefield timers
     _0xa299._0x1915.forcefieldRemovalStartTime = nil
     _0xa299._0x1915.forcefieldDetectedTime = nil
     _0xa299._0x1915.forcefieldRemovalActive = false
+
+    -- Reset tailed beast dodge state, so a restart does not begin mid-cycle or
+    -- with a stale hold timer still holding the dodge open.
+    _0xa299._0x1915.beastDodging = false
+    _0xa299._0x1915.cycleAllCorners = false
+    _0xa299._0x1915.cycleCornerIndex = 1
+    _0xa299._0x1915.lastDodgeIndex = 0
+    _0xa299._0x1915.isobuButtonCheckActive = false
+    _0xa299._0x1915.arenaVisiting = false
+    _0xa299._0x1915.arenaVisitAt = {}
+    _0xa299._0x1915.matatabi4thDangerHoldUntil = 0
+    _0xa299._0x1915.shukaku4thDangerHoldUntil = 0
+    _0xa299._0x1915.shukaku6thDangerHoldUntil = 0
+    _0xa299._0x1915.isobu2ndDangerHoldUntil = 0
+    _0xa299._0x1915.isobu4thDangerHoldUntil = 0
+    _0xa299._0x1915.isobu9thDangerHoldUntil = 0
     
     -- Stop animation
     if _0xa299._0x1915.stoppinganim then
@@ -33820,8 +34434,10 @@ function _0xa299._0x6ce0()
     _0xa299._0xFarmAnimStop()
     _0xa299._0x1915.animationTrack = nil
 
-    -- Drop the pillar hook so it cannot block after the farm has stopped.
+    -- Drop the pillar and tailed-beast-bomb hooks so neither can block or
+    -- force a dodge after the farm has stopped.
     _0xa299._0xWoodDisarm()
+    _0xa299._0xTBBDisarm()
 
     -- Stop the Wooden Golem corner-dodge loops: they spin on these flags
     -- in their own threads and would otherwise keep teleporting forever.
@@ -34102,9 +34718,34 @@ _0xa299._0xf02e:AddToggle("Auto Hyper Roar", false, function(Value)
     end)
 end, {Type = "info", Text = "Uses Hyper Roar while boss farming"})
 
-_0xa299._0x1915.settings:AddToggle("Auto Seal Tailed Beast", false, function(Value)
+-- TAILED BEASTS. All of this came over from the standalone Tailed Beast Farm
+-- when it was folded into the boss farm; the targeting and seal options get a
+-- gear each rather than stacking six more rows under the settings list.
+_0xa299._0xBeastSealToggle = _0xa299._0x1915.settings:AddToggle("Auto Seal Tailed Beast", false, function(Value)
     _0xa299._0x1915.autoSealTailedBeast = Value
-end)
+end, {Type = "info", Text = "Seals Shukaku, Matatabi and Isobu once they go down"})
+
+do
+    local g = _0xa299._0xBeastSealToggle:AddSettings("Tailed Beasts")
+
+    g:AddToggle("Only Target Unstarted", true, function(Value)
+        _0xa299._0x1915.onlyTargetInactive = Value
+    end, {Flag = "BossFarmBeastUnstarted", Type = "info", Text = "Will Only Target Ones Which are not Started"})
+
+    g:AddToggle("Target Inner Beasts", false, function(Value)
+        _0xa299._0x1915.targetInnerBeasts = Value
+    end, {Flag = "BossFarmBeastInner", Type = "info", Text = "Target Inner Beasts ( For Jin Cloak )"})
+
+    g:AddDivider()
+
+    g:AddDropdown("Method", {"Binding Seal", "Wood Seal"}, "Binding Seal", function(Value)
+        _0xa299._0x1915.sealMethod = Value
+    end)
+
+    g:AddToggle("Use Insta Cast", false, function(Value)
+        _0xa299._0x1915.useInstaCast = Value
+    end, {Flag = "BossFarmBeastInstaCast", Type = "info", Text = "Uses insta cast for Binding Seal"})
+end
 
 _0xa299._0x1915.settings:AddToggle("Auto Eat Ramen", false, function(Value)
     _0xa299._0x1915.autoEatRamen = Value
@@ -34237,1018 +34878,1031 @@ _0xa299._0x1915.settings:AddToggle("Last Stand Trait", false, function(Value)
     end
 end)
 
----------------------------------------------------------------------
--- FARM TAB - TAILED BEAST FARM STATUS UI (Lazy initialization)
----------------------------------------------------------------------
-_0xa299._0x053d = nil
-_0xa299._0x52fd = nil
-_0xa299._0xcefb = nil
-_0xa299._0x3f7c = nil
-_0xa299._0x2288 = nil
-_0xa299._0x3755 = false
-
-_0xa299._0x742a = function()
-    if _0xa299._0x3755 then return end
-    _0xa299._0x3755 = true
-    
-    _0xa299._0x053d = Instance.new("ScreenGui")
-    _0xa299._0x053d.Name = "TailedBeastStatusUI"
-    _0xa299._0x053d.Parent = game:GetService("CoreGui")
-    _0xa299._0x053d.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    _0xa299._0x053d.IgnoreGuiInset = false
-    _0xa299._0x053d.ResetOnSpawn = false
-
-    _0xa299._0x52fd = Instance.new("Frame")
-    _0xa299._0x52fd.Name = "TailedBeastFrame"
-    _0xa299._0x52fd.Parent = _0xa299._0x053d
-    _0xa299._0x52fd.AnchorPoint = Vector2.new(0.5, 0.5)
-    _0xa299._0x52fd.BackgroundTransparency = 1.0
-    _0xa299._0x52fd.BorderSizePixel = 0
-    _0xa299._0x52fd.Position = UDim2.new(0.5, 0, 0.12, 0)
-    _0xa299._0x52fd.Size = UDim2.new(0.8, 0, 0.25, 0)
-    _0xa299._0x52fd.Visible = false
-
-    _0xa299._0xcefb = Instance.new("TextLabel")
-    _0xa299._0xcefb.Name = "StatusLabel"
-    _0xa299._0xcefb.Parent = _0xa299._0x52fd
-    _0xa299._0xcefb.AnchorPoint = Vector2.new(0.5, 0.5)
-    _0xa299._0xcefb.BackgroundTransparency = 1.0
-    _0xa299._0xcefb.Position = UDim2.new(0.5, 0, 0.5, 0)
-    _0xa299._0xcefb.Size = UDim2.new(0.95, 0, 0.9, 0)
-    _0xa299._0xcefb.ZIndex = 2
-    _0xa299._0xcefb.Font = Enum.Font.SourceSansBold
-    _0xa299._0xcefb.Text = ""
-    _0xa299._0xcefb.TextColor3 = Color3.fromRGB(255, 255, 255)
-    _0xa299._0xcefb.TextScaled = true
-    _0xa299._0xcefb.TextSize = 35
-    _0xa299._0xcefb.TextWrapped = true
-    _0xa299._0xcefb.TextStrokeTransparency = 0.3
-    _0xa299._0xcefb.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-
-    _0xa299._0x3f7c = Instance.new("UIGradient")
-    _0xa299._0x3f7c.Rotation = 45
-    _0xa299._0x3f7c.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 150, 50)),
-        ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 100, 150))
-    })
-    _0xa299._0x3f7c.Parent = _0xa299._0xcefb
-
-    _0xa299._0x2288 = Instance.new("UIAspectRatioConstraint")
-    _0xa299._0x2288.Parent = _0xa299._0x52fd
-    _0xa299._0x2288.AspectRatio = 3.5
-end
-
--- Tailed Beast GUI Config Function
-_0xa299._0xb1a4 = function(action, beastName, healthText)
-    _0xa299._0x742a() -- Lazy create UI when needed
-    if action == "disable" then
-        _0xa299._0x52fd.Visible = false
-        return
-    end
-    
-    _0xa299._0x52fd.Visible = true
-    
-    if action == "serverhopping" then
-        _0xa299._0xcefb.Text = "[Tailed Beast Farm]\nServer Hopping"
-        _0xa299._0xcefb.TextColor3 = Color3.fromRGB(255, 255, 100)
-    elseif action == "farming" then
-        _0xa299._0xcefb.Text = "[Tailed Beast Farm]\n" .. (beastName or "Unknown") .. "\nHP: " .. (healthText or "N/A")
-        _0xa299._0xcefb.TextColor3 = Color3.fromRGB(100, 255, 150)
-    elseif action == "sealing" then
-        _0xa299._0xcefb.Text = "[Tailed Beast Farm]\nAttempting Seal"
-        _0xa299._0xcefb.TextColor3 = Color3.fromRGB(255, 100, 255)
-    elseif action == "forceload" then
-        _0xa299._0xcefb.Text = "[Tailed Beast Farm]\nForce Loading"
-        _0xa299._0xcefb.TextColor3 = Color3.fromRGB(100, 200, 255)
-    end
-end
-
----------------------------------------------------------------------
--- FARM TAB - TAILED BEAST FARM
----------------------------------------------------------------------
-_0xa299._0xf9c2 = {
-    enabled = false,
-    farming = false,
-    onlyTargetInactive = true, -- Only target beasts without Awake attribute
-    targetInnerBeasts = false, -- Target inner beasts (outside 600 studs of spawn) instead of regular
-    selectedBeasts = {Shukaku = true, Matatabi = true, Isobu = true}, -- Which beasts to target
-    -- Beast spawn locations for inner beast detection
-    beastSpawnLocations = {
-        Isobu = Vector3.new(-3430.300, -389.077, -792.727),
-        Matatabi = Vector3.new(305.797, -147.566, -2727.513),
-        Shukaku = Vector3.new(1935.261, -125.389, -1191.106)
-    },
-    sealMethod = "Binding Seal", -- Seal method: "Binding Seal" or "Wood Seal"
-    useInstaCast = false, -- Use insta cast for Binding Seal
-    connection = nil,
-    godmodeConnection = nil,
-    infiniteM1Connection = nil,
-    animationTrack = nil,
-    stoppinganim = nil,
-    heavyWeapon = nil,
-    currentBeast = nil,
-    beastReference = nil,
-    beastHrpReference = nil,
-    -- Dynamic rotation settings
-    rotationAngle = 0,
-    rotationSpeed = 25, -- Radians per second (very fast) - LEGACY/FALLBACK
-    rotationRadius = 15, -- Distance from beast HRP - LEGACY/FALLBACK
-    verticalOffset = 0, -- Adjustment to config's vertical offset (0 = use config default) - LEGACY/FALLBACK
-    -- Per-beast rotation settings
-    perBeastRotation = {
-        Shukaku = { speed = 25, radius = 15, offset = 19 },
-        Matatabi = { speed = 25, radius = 15, offset = 20 },
-        Isobu = { speed = 25, radius = 15, offset = 5 }
-    },
-    flickerEnabled = true,
-    -- Danger animation hold tracking
-    matatabi4thDangerHoldUntil = 0,
-    shukaku4thDangerHoldUntil = 0,
-    shukaku6thDangerHoldUntil = 0,
-    isobu4thDangerHoldUntil = 0,
-    isobu2ndDangerHoldUntil = 0,
-    -- Isobu button reactivation tracking
-    isobuButtonCheckActive = false,
-    -- Dodge position tracking
-    lastDodgeIndex = 0,
-    dodgeConnection = nil,
-    isDodging = false,
-    -- Dodge positions for each beast
-    dodgePositions = {
-        Shukaku = {
-            CFrame.new(2205.196, -125.500, -1072.268),
-            CFrame.new(2198.828, -125.500, -1386.141),
-            CFrame.new(1652.381, -125.500, -1367.527),
-            CFrame.new(1699.317, -125.500, -1021.146)
-        },
-        Matatabi = {
-            CFrame.new(602.206, -147.576, -2879.849),
-            CFrame.new(18.914, -147.617, -2893.382),
-            CFrame.new(45.084, -147.617, -2536.104),
-            CFrame.new(566.741, -147.617, -2574.296)
-        },
-        Isobu = {
-            CFrame.new(-3268.657, -389.077, -520.274),
-            CFrame.new(-3637.084, -389.077, -527.400),
-            CFrame.new(-3614.851, -389.077, -1059.534),
-            CFrame.new(-3253.979, -389.072, -1027.514)
-        }
-    }
-}
-
-_0xa299._0x4686 = {
-    ["Shukaku"] = {
-        workspaceName = "Shukaku",
-        offset = 1,
-        dangerAnim = "rbxassetid://114433999627506",
-        secondDangerAnim = "rbxassetid://108416454265462",
-        thirdDangerAnim = "rbxassetid://81192083766325",
-        fourthDangerAnim = "rbxassetid://109359185160118",
-        fifthDangerAnim = "rbxassetid://129209861939680",
-        sixthDangerAnim = "rbxassetid://101042044028411",
-        dangerTime = 0.05
-    },
-    ["Matatabi"] = {
-        workspaceName = "Matatabi",
-        offset = 30,
-        dangerAnim = "rbxassetid://98245450702485",
-        secondDangerAnim = "rbxassetid://138756923319625",
-        thirdDangerAnim = "rbxassetid://96448190421657",
-        fourthDangerAnim = "rbxassetid://115050474132580",
-        dangerTime = 0.10
-    },
-    ["Isobu"] = {
-        workspaceName = "Isobu",
-        offset = 35,
-        dangerAnim = "rbxassetid://73118048569214",
-        dangerAnimOffset = 40,
-        secondDangerAnim = "rbxassetid://137939762816920",
-        thirdDangerAnim = "rbxassetid://93108042784521",
-        fourthDangerAnim = "rbxassetid://87417738818081",
-        fifthDangerAnim = "rbxassetid://130958738660069",
-        sixthDangerAnim = "rbxassetid://91143601400588",
-        seventhDangerAnim = "rbxassetid://91905726056850",
-        eighthDangerAnim = "rbxassetid://138957995371428",
-        ninthDangerAnim = "rbxassetid://106252976689352",
-        dangerTime = 0.10
-    }
-}
-
-function _0xa299._0x5006()
-    for beastName, config in pairs(_0xa299._0x4686) do
-        -- Check if this beast is selected in the dropdown
-        if not _0xa299._0xf9c2.selectedBeasts[beastName] then
-            continue
-        end
-        
-        -- Iterate through ALL children with this name (inner and outer beasts can share names)
-        for _, beast in ipairs(workspace:GetChildren()) do
-            if beast.Name == config.workspaceName then
-                -- Check if beast has Awake attribute set to true (already claimed)
-                -- Only skip if onlyTargetInactive is enabled
-                if _0xa299._0xf9c2.onlyTargetInactive then
-                    local awakeAttr = beast:GetAttribute("Awake")
-                    if awakeAttr == true then
-                        -- Beast is awake/claimed, skip it
-                        continue
-                    end
-                end
-                
-                local humanoid = beast:FindFirstChildOfClass("Humanoid")
-                local hrp = beast:FindFirstChild("HumanoidRootPart") or beast:FindFirstChild("Torso")
-                
-                if humanoid and hrp and humanoid.Health > 0 then
-                    -- Check if beast is inner beast based on distance from spawn location
-                    local spawnLoc = _0xa299._0xf9c2.beastSpawnLocations[beastName]
-                    local isInnerBeast = false
-                    if spawnLoc then
-                        local distance = (hrp.Position - spawnLoc).Magnitude
-                        isInnerBeast = distance > 600
-                    end
-                    
-                    if _0xa299._0xf9c2.targetInnerBeasts then
-                        -- Only target inner beasts (outside 600 studs of spawn)
-                        if not isInnerBeast then
-                            continue
-                        end
-                    else
-                        -- Only target regular beasts (within 600 studs of spawn)
-                        if isInnerBeast then
-                            continue
-                        end
-                    end
-                    return beast, beastName, config, hrp, humanoid
-                end
-            end
-        end
-    end
-    return nil
-end
-
-function _0xa299._0xa2bb()
-    if _0xa299._0xf9c2.farming then return end
-    _0xa299._0xf9c2.farming = true
-    
-    _0xa299._0xf9c2.connection = task.spawn(function()
-        -- Force load into game FIRST before anything else
-        local RS = _0xa299._0xe08d
-        if not RS.Loaded:FindFirstChild(_0xa299._0x396d.Name) then
-            if workspace.CurrentCamera.CameraType == Enum.CameraType.Custom then
-                if _0xa299._0xb1a4 then _0xa299._0xb1a4("forceload") end
-                _0xa299._0x8545:Notify("Farm", "Force loading into game", 3, "info")
-                
-                task.spawn(function()
-                    pcall(function()
-                        RS:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer("LoadedIn")
-                    end)
-                end)
-                
-                pcall(function()
-                    RS:WaitForChild("Events"):WaitForChild("DataEvent"):FireServer("LoadedIn")
-                end)
-                
-                task.wait()
-                
-                if _0xa299._0x396d.PlayerGui and _0xa299._0x396d.PlayerGui:FindFirstChild("ClientGui") then
-                    local menuScreen = _0xa299._0x396d.PlayerGui.ClientGui:FindFirstChild("MenuScreen")
-                    if menuScreen then menuScreen.Visible = false end
-                end
-                
-                if _0xa299._0x396d:FindFirstChild("SoundPlaylist") then
-                    local menuTrack = _0xa299._0x396d.SoundPlaylist:FindFirstChild("MenuTrack")
-                    if menuTrack then menuTrack.Playing = false end
-                end
-                
-                -- Gets past the v1551 loading screen first, then waits for the
-                -- function to exist. See _0xa299._0xLoadIntoGame.
-                _0xa299._0xLoadIntoGame()
-                
-                local hrp = _0xa299._0x396d.Character and _0xa299._0x396d.Character:FindFirstChild("HumanoidRootPart")
-                if hrp then
-                    hrp.CFrame = _0xa299._0xdde4()
-                end
-                
-                task.wait(2)
-                
-                -- Wait for character to be ready
-                if not _0xa299._0x396d.Character then
-                    _0xa299._0x396d.CharacterAdded:Wait()
-                end
-                hrp = _0xa299._0x396d.Character:WaitForChild("HumanoidRootPart", 5)
-                if hrp then
-                    _0xa299._0x8545:Notify("Farm", "Force load complete", 3, "check")
-                end
-            end
-        end
-        
-        -- Check for tailed beast
-        local beast, beastName, config, beastHrp, beastHumanoid = _0xa299._0x5006()
-        
-        if not beast then
-            if _0xa299._0xb1a4 then _0xa299._0xb1a4("serverhopping") end
-            _0xa299._0x8545:Notify("Farm", "No valid Tailed Beast found, server hopping", 3, "info")
-            task.wait(2)
-            _0xa299._0xb5ef()
-            return
-        end
-        
-        -- Found a valid tailed beast!
-        _0xa299._0x8545:Notify("Farm", "Found " .. beastName .. "! Starting farm...", 3, "check")
-        _0xa299._0xf9c2.currentBeast = beastName
-        _0xa299._0xf9c2.beastReference = beast
-        _0xa299._0xf9c2.beastHrpReference = beastHrp
-        
-        -- Teleport to safespot
-        local char = _0xa299._0x396d.Character
-        if char and char:FindFirstChild("HumanoidRootPart") then
-            char.HumanoidRootPart.CFrame = _0xa299._0xdde4()
-        end
-        task.wait(0.5)
-        
-
-        -- Enable no fall damage
-        pcall(function()
-            _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataEvent"):FireServer("NoFallDamage", true)
-        end)
-        
-        -- Get and equip heavy weapon like boss farm
-        local heavyWeapon = nil
-        local RS = _0xa299._0xe08d
-        local DataEvent = RS:WaitForChild("Events"):WaitForChild("DataEvent")
-        
-        pcall(function()
-            local remote = RS:WaitForChild("Events"):WaitForChild("DataFunction")
-            local playerdata = remote:InvokeServer("GetData")
-            if playerdata and playerdata["CurrentWeapon"] then
-                heavyWeapon = playerdata["CurrentWeapon"]
-                _0xa299._0xf9c2.heavyWeapon = heavyWeapon
-                -- Equip weapon like boss farm does
-                local possibleWeapons = {"Golden Zabunagi", "Silver Zabunagi", "Onyx Zabunagi", "Samehada", "Executioner's Blade", "Gunbai", "Silver Kunai", "Golden Kunai", "Onyx Kunai", "Raijin Kunai", "Silver Resanagi", "Golden Resanagi", "Onyx Resanagi", "Kusanagi", "Silver Halberd", "Golden Halberd", "Onyx Halberd", "Adamantine Staff", "Silver Asumai", "Golden Asumai", "Onyx Asumai", "Frozen Executioner's Blade", "Jingle Bell Staff", "Candy Cane Kusanagi", "Nutcracker Raijin", "Tree Samehada", "Gingerbread Gunbai", "Metallic Bow", "Chakra Bow"}
-                local weaponToEquip = nil
-                
-                for _, weaponName in pairs(possibleWeapons) do
-                    if heavyWeapon == weaponName then
-                        weaponToEquip = heavyWeapon
-                        break
-                    end
-                end
-                
-                if weaponToEquip then
-                    local char = _0xa299._0x396d.Character
-                    if char then
-                        local fakeHead = char:FindFirstChild("FakeHead")
-                        if fakeHead then
-                            local skillGUI = fakeHead:FindFirstChild("skillGUI")
-                            if skillGUI and skillGUI:FindFirstChild("skillName") then
-                                local equippedWeapon = skillGUI.skillName.Text
-                                
-                                if equippedWeapon ~= weaponToEquip then
-                                    task.wait(0.4)
-                                    DataEvent:FireServer("Item", "Unselected", equippedWeapon)
-                                    task.wait(0.4)
-                                    DataEvent:FireServer("Item", "Selected", weaponToEquip)
-                                    task.wait(0.4)
-                                    _0xa299._0x8545:Notify("Farm", "Equipped: " .. weaponToEquip, 3, "info")
-                                end
-                            else
-                                -- No weapon equipped, just equip
-                                DataEvent:FireServer("Item", "Selected", weaponToEquip)
-                                task.wait(0.4)
-                                _0xa299._0x8545:Notify("Farm", "Equipped: " .. weaponToEquip, 3, "info")
-                            end
-                        end
-                    end
-                end
-            else
-            end
-        end)
-        
-        -- Start infinite M1 loop
-        _0xa299._0xf9c2.infiniteM1Connection = task.spawn(function()
-            while _0xa299._0xf9c2.farming do
-                -- Check if beast is knocked before attacking
-                local beastRef = _0xa299._0xf9c2.beastReference
-                if beastRef then
-                    local settings = beastRef:FindFirstChild("Settings")
-                    local isKnocked = settings and settings:FindFirstChild("Knocked") and settings.Knocked.Value
-                    
-                    if not isKnocked then
-                        pcall(function()
-                            local args = {"CheckMeleeHit", nil, "NormalAttack", false, 2}
-                            DataEvent:FireServer(unpack(args, 1, 5))
-                        end)
-                    end
-                end
-                task.wait()
-            end
-        end)
-        
-        -- Start chakra sense animation
-        char = _0xa299._0x396d.Character
-        if char then
-            local humanoid = char:FindFirstChild("Humanoid")
-            if humanoid then
-                _0xa299._0xf9c2.animationTrack = _0xa299._0xFarmAnim()
-                
-            end
-        end
-        
-        -- Main farming loop
-        while _0xa299._0xf9c2.farming do
-            char = _0xa299._0x396d.Character
-            local hrp = char and char:FindFirstChild("HumanoidRootPart")
-            if not hrp then task.wait(1) continue end
-            
-            -- Re-check beast reference
-            beast = _0xa299._0xf9c2.beastReference
-            if not beast or not beast.Parent then
-                if _0xa299._0xb1a4 then _0xa299._0xb1a4("serverhopping") end
-                _0xa299._0x8545:Notify("Farm", "Tailed Beast gone, server hopping", 3, "info")
-                task.wait(2)
-                _0xa299._0xb5ef()
-                return
-            end
-            
-            beastHrp = beast:FindFirstChild("HumanoidRootPart") or beast:FindFirstChild("Torso")
-            beastHumanoid = beast:FindFirstChildOfClass("Humanoid")
-            
-            if not beastHrp or not beastHumanoid or beastHumanoid.Health <= 0 then
-                if _0xa299._0xb1a4 then _0xa299._0xb1a4("serverhopping") end
-                _0xa299._0x8545:Notify("Farm", "Tailed Beast dead, server hopping", 3, "info")
-                task.wait(2)
-                _0xa299._0xb5ef()
-                return
-            end
-            
-            -- Check if knocked
-            local settings = beast:FindFirstChild("Settings")
-            local isKnocked = settings and settings:FindFirstChild("Knocked") and settings.Knocked.Value
-            
-            -- Isobu button check - if any button is deactivated, go reactivate them
-            if beastName == "Isobu" and not _0xa299._0xf9c2.isobuButtonCheckActive then
-                local isobuButtons = workspace:FindFirstChild("IsobuButtons")
-                if isobuButtons then
-                    local deactivatedButtons = {}
-                    for _, button in ipairs(isobuButtons:GetChildren()) do
-                        if button.Name == "IsobuButton" then
-                            local activated = button:FindFirstChild("Activated")
-                            if activated and activated.Value == false then
-                                table.insert(deactivatedButtons, button)
-                            end
-                        end
-                    end
-                    
-                    if #deactivatedButtons > 0 then
-                        _0xa299._0xf9c2.isobuButtonCheckActive = true
-                        _0xa299._0x8545:Notify("Farm", "Pressing Buttons | " .. #deactivatedButtons .. " buttons...", 3, "info")
-                        
-                        -- Stop dodging if we were
-                        if _0xa299._0xf9c2.isDodging then
-                            _0xa299._0xf9c2.isDodging = false
-                            if _0xa299._0xf9c2.dodgeConnection then
-                                pcall(function() task.cancel(_0xa299._0xf9c2.dodgeConnection) end)
-                                _0xa299._0xf9c2.dodgeConnection = nil
-                            end
-                        end
-                        
-                        -- Enable blocking while pressing buttons if not already blocking
-                        local wasBlocking = false
-                        pcall(function()
-                            local playerSettings = _0xa299._0xe08d.Settings:FindFirstChild(_0xa299._0x396d.Name)
-                            if playerSettings then
-                                local blockingValue = playerSettings:FindFirstChild("Blocking")
-                                if blockingValue then
-                                    wasBlocking = blockingValue.Value
-                                    if not wasBlocking then
-                                        _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer("Block", 2)
-                                    end
-                                end
-                            end
-                        end)
-                        
-                        -- Teleport to each deactivated button and fire activation
-                        for _, button in ipairs(deactivatedButtons) do
-                            if not _0xa299._0xf9c2.farming then break end
-                            
-                            local mainPart = button:FindFirstChild("Main")
-                            if mainPart then
-                                hrp.CFrame = mainPart.CFrame + Vector3.new(0, 3, 0)
-                                task.wait(0.2)
-                                
-                                pcall(function()
-                                    _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataEvent"):FireServer("ActivateButton", button)
-                                end)
-                                
-                                task.wait(1.5)
-                            end
-                        end
-                        
-                        -- Disable blocking after buttons are done (only if we enabled it)
-                        if not wasBlocking then
-                            pcall(function()
-                                _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer("EndBlock")
-                            end)
-                        end
-                        
-                        _0xa299._0x8545:Notify("Farm", "Buttons work again, back to farming", 3, "check")
-                        _0xa299._0xf9c2.isobuButtonCheckActive = false
-                        task.wait()
-                        continue
-                    end
-                end
-            end
-            
-            if isKnocked then
-                if _0xa299._0xb1a4 then _0xa299._0xb1a4("sealing") end
-                _0xa299._0x8545:Notify("Farm", beastName .. " knocked! Preparing Binding Seal...", 3, "check")
-                
-                -- Teleport to the beast immediately
-                if beastHrp and hrp then
-                    hrp.CFrame = CFrame.new(beastHrp.Position + Vector3.new(0, 3, 0), beastHrp.Position)
-                end
-                
-                -- Stop animation
-                if _0xa299._0xf9c2.animationTrack then
-                    pcall(function() _0xa299._0xf9c2.animationTrack:Stop() end)
-                end
-                
-                -- Disconnect stoppinganim to allow normal animations
-                if _0xa299._0xf9c2.stoppinganim then
-                    pcall(function() _0xa299._0xf9c2.stoppinganim:Disconnect() end)
-                    _0xa299._0xf9c2.stoppinganim = nil
-                end
-                
-                -- Stop infinite M1 loop
-                if _0xa299._0xf9c2.infiniteM1Connection then
-                    pcall(function() task.cancel(_0xa299._0xf9c2.infiniteM1Connection) end)
-                    _0xa299._0xf9c2.infiniteM1Connection = nil
-                end
-                
-                -- Minimal wait after knocked
-                task.wait()
-                
-                -- Spam Seal for 12 seconds 
-                local sealStartTime = tick()
-                while tick() - sealStartTime < 12 do
-                    -- Check distance from beast, teleport back if more than 60 studs away
-                    if beastHrp and hrp then
-                        local distance = (hrp.Position - beastHrp.Position).Magnitude
-                        if distance > 60 then
-                            hrp.CFrame = CFrame.new(beastHrp.Position + Vector3.new(0, 3, 0), beastHrp.Position)
-                        end
-                    end
-                    
-                    pcall(function()
-                        if _0xa299._0xf9c2.sealMethod == "Wood Seal" then
-                            _0xa299._0xe08d.Events.DataEvent:FireServer("startSkill", "Wood Seal")
-                        elseif _0xa299._0xf9c2.useInstaCast then
-                            local myPos = hrp.Position
-                            _0xa299._0xe08d.Events.DataEvent:FireServer("startSkill", "Binding Seal", Vector3.new(myPos.X, myPos.Y, myPos.Z), true, "MouseButton2")
-                        else
-                            _0xa299._0xe08d.Events.DataEvent:FireServer("startSkill", "Binding Seal", hrp.CFrame)
-                            task.wait()
-                            _0xa299._0xe08d.Events.DataEvent:FireServer("ReleaseSkill")
-                        end
-                    end)
-                    task.wait()
-                end
-                
-                if _0xa299._0xb1a4 then _0xa299._0xb1a4("serverhopping") end
-                _0xa299._0x8545:Notify("Farm", "Seal used, server hopping", 3, "check")
-                
-                -- Teleport away and server hop
-                hrp.CFrame = _0xa299._0xdde4()
-                task.wait(1)
-                _0xa299._0xb5ef()
-                return
-            end
-            
-            -- Not knocked, farm the beast with FAST ROTATION/FLICKER movement
-            _0xa299._0xVelSettle(hrp)
-            
-            -- Animation-based dodging (same as boss farm)
-            local extraOffset = 0
-            local isDodging = false
-            if config.dangerAnim and beastHumanoid then
-                local animator = beastHumanoid:FindFirstChildOfClass("Animator")
-                if animator then
-                    local dangerTime = config.dangerTime or 0.2
-                    
-                    -- Check primary danger animation
-                    for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
-                        if track.Animation.AnimationId == config.dangerAnim then
-                            if track.TimePosition > dangerTime and track.TimePosition < 2.7 then
-                                extraOffset = 300
-                                isDodging = true
-                                break
-                            end
-                        end
-                    end
-                    
-                    -- Check second danger animation
-                    if extraOffset == 0 and config.secondDangerAnim then
-                        for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
-                            if track.Animation.AnimationId == config.secondDangerAnim then
-                                if track.TimePosition > dangerTime and track.TimePosition < 2.7 then
-                                    extraOffset = 300
-                                    isDodging = true
-                                    if beastName == "Isobu" then
-                                        _0xa299._0xf9c2.isobu2ndDangerHoldUntil = tick() + 6
-                                    end
-                                    break
-                                end
-                            end
-                        end
-                        -- Isobu: keep dodging if still within 2nd anim hold period
-                        if extraOffset == 0 and beastName == "Isobu" and tick() < (_0xa299._0xf9c2.isobu2ndDangerHoldUntil or 0) then
-                            extraOffset = 300
-                            isDodging = true
-                        end
-                    end
-                    
-                    -- Check third danger animation
-                    if extraOffset == 0 and config.thirdDangerAnim then
-                        for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
-                            if track.Animation.AnimationId == config.thirdDangerAnim then
-                                if track.TimePosition > dangerTime and track.TimePosition < 2.7 then
-                                    extraOffset = 300
-                                    isDodging = true
-                                    break
-                                end
-                            end
-                        end
-                    end
-                    
-                    -- Check fourth danger animation (with hold timer)
-                    -- These specific anims need cycle-all-corners dodge: Matatabi 4th, Shukaku 4th
-                    if extraOffset == 0 and config.fourthDangerAnim then
-                        for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
-                            if track.Animation.AnimationId == config.fourthDangerAnim then
-                                if track.TimePosition > dangerTime and track.TimePosition < 2.7 then
-                                    extraOffset = 300
-                                    isDodging = true
-                                    if beastName == "Matatabi" then
-                                        _0xa299._0xf9c2.matatabi4thDangerHoldUntil = tick() + 9
-                                        _0xa299._0xf9c2.cycleAllCorners = true
-                                    elseif beastName == "Shukaku" then
-                                        _0xa299._0xf9c2.shukaku4thDangerHoldUntil = tick() + 9
-                                        _0xa299._0xf9c2.cycleAllCorners = true
-                                    elseif beastName == "Isobu" then
-                                        _0xa299._0xf9c2.isobu4thDangerHoldUntil = tick() + 9
-                                    end
-                                    break
-                                end
-                            end
-                        end
-                        -- Keep offset if still within hold period
-                        if extraOffset == 0 and beastName == "Matatabi" and tick() < _0xa299._0xf9c2.matatabi4thDangerHoldUntil then
-                            extraOffset = 300
-                            isDodging = true
-                            _0xa299._0xf9c2.cycleAllCorners = true
-                        end
-                        if extraOffset == 0 and beastName == "Shukaku" and tick() < _0xa299._0xf9c2.shukaku4thDangerHoldUntil then
-                            extraOffset = 300
-                            isDodging = true
-                            _0xa299._0xf9c2.cycleAllCorners = true
-                        end
-                        if extraOffset == 0 and beastName == "Isobu" and tick() < _0xa299._0xf9c2.isobu4thDangerHoldUntil then
-                            extraOffset = 300
-                            isDodging = true
-                        end
-                    end
-                    
-                    -- Check fifth danger animation (Shukaku only)
-                    if extraOffset == 0 and config.fifthDangerAnim then
-                        for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
-                            if track.Animation.AnimationId == config.fifthDangerAnim then
-                                if track.TimePosition > dangerTime and track.TimePosition < 2.7 then
-                                    extraOffset = 300
-                                    isDodging = true
-                                    break
-                                end
-                            end
-                        end
-                    end
-                    
-                    -- Check sixth danger animation (Isobu or Shukaku)
-                    if extraOffset == 0 and config.sixthDangerAnim then
-                        for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
-                            if track.Animation.AnimationId == config.sixthDangerAnim then
-                                if track.TimePosition > dangerTime and track.TimePosition < 2.7 then
-                                    extraOffset = 300
-                                    isDodging = true
-                                    -- Shukaku 6th danger anim: 5s extended dodge
-                                    if beastName == "Shukaku" then
-                                        _0xa299._0xf9c2.shukaku6thDangerHoldUntil = tick() + 5
-                                    end
-                                    break
-                                end
-                            end
-                        end
-                        -- Shukaku: keep dodging if still within 6th anim hold period
-                        if extraOffset == 0 and beastName == "Shukaku" and tick() < (_0xa299._0xf9c2.shukaku6thDangerHoldUntil or 0) then
-                            extraOffset = 300
-                            isDodging = true
-                        end
-                    end
-                    
-                    -- Check seventh danger animation (Isobu)
-                    if extraOffset == 0 and config.seventhDangerAnim then
-                        for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
-                            if track.Animation.AnimationId == config.seventhDangerAnim then
-                                if track.TimePosition > dangerTime and track.TimePosition < 2.7 then
-                                    extraOffset = 300
-                                    isDodging = true
-                                    break
-                                end
-                            end
-                        end
-                    end
-                    
-                    -- Check eighth danger animation (Isobu)
-                    if extraOffset == 0 and config.eighthDangerAnim then
-                        for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
-                            if track.Animation.AnimationId == config.eighthDangerAnim then
-                                if track.TimePosition > dangerTime and track.TimePosition < 2.7 then
-                                    extraOffset = 300
-                                    isDodging = true
-                                    break
-                                end
-                            end
-                        end
-                    end
-                    
-                    -- Check ninth danger animation (Isobu) - with 6 second extended dodge + cycle all corners
-                    if extraOffset == 0 and config.ninthDangerAnim then
-                        for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
-                            if track.Animation.AnimationId == config.ninthDangerAnim then
-                                if track.TimePosition > dangerTime and track.TimePosition < 2.7 then
-                                    extraOffset = 300
-                                    isDodging = true
-                                    _0xa299._0xf9c2.isobu9thDangerHoldUntil = tick() + 6
-                                    _0xa299._0xf9c2.cycleAllCorners = true
-                                    break
-                                end
-                            end
-                        end
-                        -- Isobu: keep dodging if still within hold period
-                        if extraOffset == 0 and beastName == "Isobu" and tick() < (_0xa299._0xf9c2.isobu9thDangerHoldUntil or 0) then
-                            extraOffset = 300
-                            isDodging = true
-                            _0xa299._0xf9c2.cycleAllCorners = true
-                        end
-                    end
-                end
-            end
-            
-            -- If dodging, start teleport loop through dodge positions
-            if isDodging then
-                if not _0xa299._0xf9c2.isDodging then
-                    _0xa299._0xf9c2.isDodging = true
-                    _0xa299._0xf9c2.cycleCornerIndex = 1
-                    -- Start dodge teleport loop
-                    _0xa299._0xf9c2.dodgeConnection = task.spawn(function()
-                        local positions = _0xa299._0xf9c2.dodgePositions[beastName]
-                        if not positions then
-                            -- Fallback to safespot if no positions defined
-                            while _0xa299._0xf9c2.isDodging and _0xa299._0xf9c2.farming do
-                                hrp.CFrame = _0xa299._0xdde4()
-                                task.wait(0.2)
-                            end
-                            return
-                        end
-                        
-                        while _0xa299._0xf9c2.isDodging and _0xa299._0xf9c2.farming do
-                            local bestIndex = 1
-                            
-                            -- Check if we should cycle through ALL corners (for specific danger anims)
-                            if _0xa299._0xf9c2.cycleAllCorners then
-                                -- Cycle through all corners sequentially
-                                bestIndex = _0xa299._0xf9c2.cycleCornerIndex or 1
-                                _0xa299._0xf9c2.cycleCornerIndex = (_0xa299._0xf9c2.cycleCornerIndex % #positions) + 1
-                            else
-                                -- Normal behavior: find farthest from beast
-                                local beastPos = beastHrp and beastHrp.Position or Vector3.new(0, 0, 0)
-                                local closestIndex = 1
-                                local closestDistance = math.huge
-                                
-                                for i, pos in ipairs(positions) do
-                                    local dist = (pos.Position - beastPos).Magnitude
-                                    if dist < closestDistance then
-                                        closestDistance = dist
-                                        closestIndex = i
-                                    end
-                                end
-                                
-                                -- Find farthest position from beast, excluding closest to beast AND last used
-                                local bestDistance = 0
-                                
-                                for i, pos in ipairs(positions) do
-                                    if i ~= closestIndex and i ~= _0xa299._0xf9c2.lastDodgeIndex then
-                                        local dist = (pos.Position - beastPos).Magnitude
-                                        if dist > bestDistance then
-                                            bestDistance = dist
-                                            bestIndex = i
-                                        end
-                                    end
-                                end
-                                
-                                -- If no valid position found (all excluded), pick any that isn't closest
-                                if bestDistance == 0 then
-                                    for i, pos in ipairs(positions) do
-                                        if i ~= closestIndex then
-                                            bestIndex = i
-                                            break
-                                        end
-                                    end
-                                end
-                            end
-                            
-                            _0xa299._0xf9c2.lastDodgeIndex = bestIndex
-                            if hrp then
-                                hrp.CFrame = positions[bestIndex]
-                            end
-                            task.wait(0.2)
-                        end
-                    end)
-                end
-                task.wait()
-                continue
-            else
-                -- Stop dodging if we were dodging
-                if _0xa299._0xf9c2.isDodging then
-                    _0xa299._0xf9c2.isDodging = false
-                    _0xa299._0xf9c2.cycleAllCorners = false
-                    if _0xa299._0xf9c2.dodgeConnection then
-                        pcall(function() task.cancel(_0xa299._0xf9c2.dodgeConnection) end)
-                        _0xa299._0xf9c2.dodgeConnection = nil
-                    end
-                end
-            end
-            
-            -- Get per-beast rotation settings (fallback to legacy if not found)
-            local beastRotation = _0xa299._0xf9c2.perBeastRotation[beastName] or {
-                speed = _0xa299._0xf9c2.rotationSpeed,
-                radius = _0xa299._0xf9c2.rotationRadius,
-                offset = _0xa299._0xf9c2.verticalOffset
-            }
-            
-            -- Update rotation angle (super fast spinning)
-            _0xa299._0xf9c2.rotationAngle = _0xa299._0xf9c2.rotationAngle + beastRotation.speed
-            if _0xa299._0xf9c2.rotationAngle > math.pi * 2 then
-                _0xa299._0xf9c2.rotationAngle = _0xa299._0xf9c2.rotationAngle - math.pi * 2
-            end
-            
-            local angle = _0xa299._0xf9c2.rotationAngle
-            local radius = beastRotation.radius
-            local vertOffset = (config.offset or 5) + beastRotation.offset
-            
-            -- Add random flicker/jitter for unpredictable movement
-            local flickerX = 0
-            local flickerZ = 0
-            local flickerY = 0
-            if _0xa299._0xf9c2.flickerEnabled then
-                flickerX = (math.random() - 0.5) * 6
-                flickerZ = (math.random() - 0.5) * 6
-                flickerY = (math.random() - 0.5) * 4
-            end
-            
-            -- Calculate position orbiting around beast
-            local offsetX = math.cos(angle) * radius + flickerX
-            local offsetZ = math.sin(angle) * radius + flickerZ
-            local offsetY = vertOffset + flickerY
-            
-            local orbitPos = beastHrp.Position + Vector3.new(offsetX, offsetY, offsetZ)
-            hrp.CFrame = CFrame.new(orbitPos, beastHrp.Position)
-            
-            -- Update status UI with HP
-            local healthText = math.floor(beastHumanoid.Health) .. "/" .. math.floor(beastHumanoid.MaxHealth)
-            if _0xa299._0xb1a4 then _0xa299._0xb1a4("farming", beastName, healthText) end
-            
-            task.wait()
-        end
-    end)
-end
-
-function _0xa299._0x11ef()
-    _0xa299._0xf9c2.enabled = false
-    _0xa299._0xf9c2.farming = false
-    
-    -- Hide status UI
-    if _0xa299._0xb1a4 then _0xa299._0xb1a4("disable") end
-    
-    if _0xa299._0xf9c2.connection then
-        pcall(function() task.cancel(_0xa299._0xf9c2.connection) end)
-        _0xa299._0xf9c2.connection = nil
-    end
-    
-    if _0xa299._0xf9c2.godmodeConnection then
-        pcall(function() task.cancel(_0xa299._0xf9c2.godmodeConnection) end)
-        _0xa299._0xf9c2.godmodeConnection = nil
-    end
-    
-    if _0xa299._0xf9c2.infiniteM1Connection then
-        pcall(function() task.cancel(_0xa299._0xf9c2.infiniteM1Connection) end)
-        _0xa299._0xf9c2.infiniteM1Connection = nil
-    end
-    
-    if _0xa299._0xf9c2.animationTrack then
-        pcall(function() _0xa299._0xf9c2.animationTrack:Stop() end)
-        _0xa299._0xf9c2.animationTrack = nil
-    end
-    
-    if _0xa299._0xf9c2.stoppinganim then
-        pcall(function() _0xa299._0xf9c2.stoppinganim:Disconnect() end)
-        _0xa299._0xf9c2.stoppinganim = nil
-    end
-    
-    _0xa299._0xf9c2.currentBeast = nil
-    _0xa299._0xf9c2.beastReference = nil
-    _0xa299._0xf9c2.beastHrpReference = nil
-    _0xa299._0xf9c2.heavyWeapon = nil
-end
-
-_0xa299._0x74e9 = _0xa299._0x4f39:AddToggle("Enable Farm", false, function(Value)
-    _0xa299._0xWM.set("FarmTailedBeast", Value)
-    if Value then
-        _0xa299._0xf9c2.enabled = true
-        _0xa299._0xa2bb()
-    else
-        _0xa299._0x11ef()
-    end
-end, {Type = "warning", Text = "Players Can Clip You"})
-
--- Target selection and seal method both belong to the farm toggle, so they get
--- one gear each rather than stacking eight rows under the switch.
-do
-    local g = _0xa299._0x74e9:AddSettings("Targets")
-
-    g:AddMultiDropdown("Beasts", {"Shukaku", "Matatabi", "Isobu"}, {"Shukaku", "Matatabi", "Isobu"}, function(Values)
-        _0xa299._0xf9c2.selectedBeasts = {}
-        for _, beast in ipairs(Values) do
-            _0xa299._0xf9c2.selectedBeasts[beast] = true
-        end
-    end)
-
-    g:AddDivider()
-
-    g:AddToggle("Only Target Unstarted", true, function(Value)
-        _0xa299._0xf9c2.onlyTargetInactive = Value
-    end, {Type = "info", Text = "Will Only Target Ones Which are not Started"})
-
-    g:AddToggle("Target Inner Beasts", false, function(Value)
-        _0xa299._0xf9c2.targetInnerBeasts = Value
-    end, {Type = "info", Text = "Target Inner Beasts ( For Jin Cloak )"})
-
-    g:AddDivider()
-
-    g:AddDropdown("Method", {"Binding Seal", "Wood Seal"}, "Binding Seal", function(Value)
-        _0xa299._0xf9c2.sealMethod = Value
-        _0xa299._0x8545:Notify("Farm", "Seal method set to: " .. Value, 3, "info")
-    end)
-
-    g:AddToggle("Use Insta Cast", false, function(Value)
-        _0xa299._0xf9c2.useInstaCast = Value
-    end, {Type = "info", Text = "Uses insta cast for Binding Seal"})
-end
-
--- Per-Beast Rotation Settings UI
-_0xa299._0xTBOP:AddLabel("Shukaku")
-_0xa299._0xTBOP:AddSlider("Shukaku Speed", 1, 100, 25, function(Value)
-    _0xa299._0xf9c2.perBeastRotation.Shukaku.speed = Value
-end)
-_0xa299._0xTBOP:AddSlider("Shukaku Radius", 5, 50, 15, function(Value)
-    _0xa299._0xf9c2.perBeastRotation.Shukaku.radius = Value
-end)
-_0xa299._0xTBOP:AddSlider("Shukaku Offset", -50, 50, 0, function(Value)
-    _0xa299._0xf9c2.perBeastRotation.Shukaku.offset = Value
-end)
-
-_0xa299._0xTBOP:AddDivider()
-
-_0xa299._0xTBOP:AddLabel("Matatabi")
-_0xa299._0xTBOP:AddSlider("Matatabi Speed", 1, 100, 25, function(Value)
-    _0xa299._0xf9c2.perBeastRotation.Matatabi.speed = Value
-end)
-_0xa299._0xTBOP:AddSlider("Matatabi Radius", 5, 50, 15, function(Value)
-    _0xa299._0xf9c2.perBeastRotation.Matatabi.radius = Value
-end)
-_0xa299._0xTBOP:AddSlider("Matatabi Offset", -50, 50, 0, function(Value)
-    _0xa299._0xf9c2.perBeastRotation.Matatabi.offset = Value
-end)
-
-_0xa299._0xTBOP:AddDivider()
-
-_0xa299._0xTBOP:AddLabel("Isobu")
-_0xa299._0xTBOP:AddSlider("Isobu Speed", 1, 100, 25, function(Value)
-    _0xa299._0xf9c2.perBeastRotation.Isobu.speed = Value
-end)
-_0xa299._0xTBOP:AddSlider("Isobu Radius", 5, 50, 15, function(Value)
-    _0xa299._0xf9c2.perBeastRotation.Isobu.radius = Value
-end)
-_0xa299._0xTBOP:AddSlider("Isobu Offset", -50, 50, 0, function(Value)
-    _0xa299._0xf9c2.perBeastRotation.Isobu.offset = Value
-end)
+-- DISABLED 2026-10-22 at the user's request: the standalone Tailed Beast Farm
+-- confused people by sitting outside the Boss Farm, so it was folded INTO the
+-- Boss Farm instead. Kept in full rather than deleted so it can be reverted.
+--
+-- What moved across (search for _0xBeastDodge / _0xIsBeast / _0xIsobuPressButtons):
+--   * the arena-corner dodge and every danger animation and hold timer
+--   * the Isobu button pressing, rewritten to finish in well under 1.5s
+--     instead of the 1.5s PER BUTTON this version waited (x6 buttons)
+--   * Only Target Unstarted / Target Inner Beasts / Method / Use Insta Cast
+--
+-- What did NOT move, deliberately: the spinning orbit, the per-beast rotation
+-- speed/radius/offset sliders and the random flicker. The Boss Farm's static
+-- hover is the behaviour the user wants kept.
+-- ---------------------------------------------------------------------
+-- -- FARM TAB - TAILED BEAST FARM STATUS UI (Lazy initialization)
+-- ---------------------------------------------------------------------
+-- _0xa299._0x053d = nil
+-- _0xa299._0x52fd = nil
+-- _0xa299._0xcefb = nil
+-- _0xa299._0x3f7c = nil
+-- _0xa299._0x2288 = nil
+-- _0xa299._0x3755 = false
+--
+-- _0xa299._0x742a = function()
+--     if _0xa299._0x3755 then return end
+--     _0xa299._0x3755 = true
+--
+--     _0xa299._0x053d = Instance.new("ScreenGui")
+--     _0xa299._0x053d.Name = "TailedBeastStatusUI"
+--     _0xa299._0x053d.Parent = game:GetService("CoreGui")
+--     _0xa299._0x053d.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+--     _0xa299._0x053d.IgnoreGuiInset = false
+--     _0xa299._0x053d.ResetOnSpawn = false
+--
+--     _0xa299._0x52fd = Instance.new("Frame")
+--     _0xa299._0x52fd.Name = "TailedBeastFrame"
+--     _0xa299._0x52fd.Parent = _0xa299._0x053d
+--     _0xa299._0x52fd.AnchorPoint = Vector2.new(0.5, 0.5)
+--     _0xa299._0x52fd.BackgroundTransparency = 1.0
+--     _0xa299._0x52fd.BorderSizePixel = 0
+--     _0xa299._0x52fd.Position = UDim2.new(0.5, 0, 0.12, 0)
+--     _0xa299._0x52fd.Size = UDim2.new(0.8, 0, 0.25, 0)
+--     _0xa299._0x52fd.Visible = false
+--
+--     _0xa299._0xcefb = Instance.new("TextLabel")
+--     _0xa299._0xcefb.Name = "StatusLabel"
+--     _0xa299._0xcefb.Parent = _0xa299._0x52fd
+--     _0xa299._0xcefb.AnchorPoint = Vector2.new(0.5, 0.5)
+--     _0xa299._0xcefb.BackgroundTransparency = 1.0
+--     _0xa299._0xcefb.Position = UDim2.new(0.5, 0, 0.5, 0)
+--     _0xa299._0xcefb.Size = UDim2.new(0.95, 0, 0.9, 0)
+--     _0xa299._0xcefb.ZIndex = 2
+--     _0xa299._0xcefb.Font = Enum.Font.SourceSansBold
+--     _0xa299._0xcefb.Text = ""
+--     _0xa299._0xcefb.TextColor3 = Color3.fromRGB(255, 255, 255)
+--     _0xa299._0xcefb.TextScaled = true
+--     _0xa299._0xcefb.TextSize = 35
+--     _0xa299._0xcefb.TextWrapped = true
+--     _0xa299._0xcefb.TextStrokeTransparency = 0.3
+--     _0xa299._0xcefb.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+--
+--     _0xa299._0x3f7c = Instance.new("UIGradient")
+--     _0xa299._0x3f7c.Rotation = 45
+--     _0xa299._0x3f7c.Color = ColorSequence.new({
+--         ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 150, 50)),
+--         ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 100, 150))
+--     })
+--     _0xa299._0x3f7c.Parent = _0xa299._0xcefb
+--
+--     _0xa299._0x2288 = Instance.new("UIAspectRatioConstraint")
+--     _0xa299._0x2288.Parent = _0xa299._0x52fd
+--     _0xa299._0x2288.AspectRatio = 3.5
+-- end
+--
+-- -- Tailed Beast GUI Config Function
+-- _0xa299._0xb1a4 = function(action, beastName, healthText)
+--     _0xa299._0x742a() -- Lazy create UI when needed
+--     if action == "disable" then
+--         _0xa299._0x52fd.Visible = false
+--         return
+--     end
+--
+--     _0xa299._0x52fd.Visible = true
+--
+--     if action == "serverhopping" then
+--         _0xa299._0xcefb.Text = "[Tailed Beast Farm]\nServer Hopping"
+--         _0xa299._0xcefb.TextColor3 = Color3.fromRGB(255, 255, 100)
+--     elseif action == "farming" then
+--         _0xa299._0xcefb.Text = "[Tailed Beast Farm]\n" .. (beastName or "Unknown") .. "\nHP: " .. (healthText or "N/A")
+--         _0xa299._0xcefb.TextColor3 = Color3.fromRGB(100, 255, 150)
+--     elseif action == "sealing" then
+--         _0xa299._0xcefb.Text = "[Tailed Beast Farm]\nAttempting Seal"
+--         _0xa299._0xcefb.TextColor3 = Color3.fromRGB(255, 100, 255)
+--     elseif action == "forceload" then
+--         _0xa299._0xcefb.Text = "[Tailed Beast Farm]\nForce Loading"
+--         _0xa299._0xcefb.TextColor3 = Color3.fromRGB(100, 200, 255)
+--     end
+-- end
+--
+-- ---------------------------------------------------------------------
+-- -- FARM TAB - TAILED BEAST FARM
+-- ---------------------------------------------------------------------
+-- _0xa299._0xf9c2 = {
+--     enabled = false,
+--     farming = false,
+--     onlyTargetInactive = true, -- Only target beasts without Awake attribute
+--     targetInnerBeasts = false, -- Target inner beasts (outside 600 studs of spawn) instead of regular
+--     selectedBeasts = {Shukaku = true, Matatabi = true, Isobu = true}, -- Which beasts to target
+--     -- Beast spawn locations for inner beast detection
+--     beastSpawnLocations = {
+--         Isobu = Vector3.new(-3430.300, -389.077, -792.727),
+--         Matatabi = Vector3.new(305.797, -147.566, -2727.513),
+--         Shukaku = Vector3.new(1935.261, -125.389, -1191.106)
+--     },
+--     sealMethod = "Binding Seal", -- Seal method: "Binding Seal" or "Wood Seal"
+--     useInstaCast = false, -- Use insta cast for Binding Seal
+--     connection = nil,
+--     godmodeConnection = nil,
+--     infiniteM1Connection = nil,
+--     animationTrack = nil,
+--     stoppinganim = nil,
+--     heavyWeapon = nil,
+--     currentBeast = nil,
+--     beastReference = nil,
+--     beastHrpReference = nil,
+--     -- Dynamic rotation settings
+--     rotationAngle = 0,
+--     rotationSpeed = 25, -- Radians per second (very fast) - LEGACY/FALLBACK
+--     rotationRadius = 15, -- Distance from beast HRP - LEGACY/FALLBACK
+--     verticalOffset = 0, -- Adjustment to config's vertical offset (0 = use config default) - LEGACY/FALLBACK
+--     -- Per-beast rotation settings
+--     perBeastRotation = {
+--         Shukaku = { speed = 25, radius = 15, offset = 19 },
+--         Matatabi = { speed = 25, radius = 15, offset = 20 },
+--         Isobu = { speed = 25, radius = 15, offset = 5 }
+--     },
+--     flickerEnabled = true,
+--     -- Danger animation hold tracking
+--     matatabi4thDangerHoldUntil = 0,
+--     shukaku4thDangerHoldUntil = 0,
+--     shukaku6thDangerHoldUntil = 0,
+--     isobu4thDangerHoldUntil = 0,
+--     isobu2ndDangerHoldUntil = 0,
+--     -- Isobu button reactivation tracking
+--     isobuButtonCheckActive = false,
+--     -- Dodge position tracking
+--     lastDodgeIndex = 0,
+--     dodgeConnection = nil,
+--     isDodging = false,
+--     -- Dodge positions for each beast
+--     dodgePositions = {
+--         Shukaku = {
+--             CFrame.new(2205.196, -125.500, -1072.268),
+--             CFrame.new(2198.828, -125.500, -1386.141),
+--             CFrame.new(1652.381, -125.500, -1367.527),
+--             CFrame.new(1699.317, -125.500, -1021.146)
+--         },
+--         Matatabi = {
+--             CFrame.new(602.206, -147.576, -2879.849),
+--             CFrame.new(18.914, -147.617, -2893.382),
+--             CFrame.new(45.084, -147.617, -2536.104),
+--             CFrame.new(566.741, -147.617, -2574.296)
+--         },
+--         Isobu = {
+--             CFrame.new(-3268.657, -389.077, -520.274),
+--             CFrame.new(-3637.084, -389.077, -527.400),
+--             CFrame.new(-3614.851, -389.077, -1059.534),
+--             CFrame.new(-3253.979, -389.072, -1027.514)
+--         }
+--     }
+-- }
+--
+-- _0xa299._0x4686 = {
+--     ["Shukaku"] = {
+--         workspaceName = "Shukaku",
+--         offset = 1,
+--         dangerAnim = "rbxassetid://114433999627506",
+--         secondDangerAnim = "rbxassetid://108416454265462",
+--         thirdDangerAnim = "rbxassetid://81192083766325",
+--         fourthDangerAnim = "rbxassetid://109359185160118",
+--         fifthDangerAnim = "rbxassetid://129209861939680",
+--         sixthDangerAnim = "rbxassetid://101042044028411",
+--         dangerTime = 0.05
+--     },
+--     ["Matatabi"] = {
+--         workspaceName = "Matatabi",
+--         offset = 30,
+--         dangerAnim = "rbxassetid://98245450702485",
+--         secondDangerAnim = "rbxassetid://138756923319625",
+--         thirdDangerAnim = "rbxassetid://96448190421657",
+--         fourthDangerAnim = "rbxassetid://115050474132580",
+--         dangerTime = 0.10
+--     },
+--     ["Isobu"] = {
+--         workspaceName = "Isobu",
+--         offset = 35,
+--         dangerAnim = "rbxassetid://73118048569214",
+--         dangerAnimOffset = 40,
+--         secondDangerAnim = "rbxassetid://137939762816920",
+--         thirdDangerAnim = "rbxassetid://93108042784521",
+--         fourthDangerAnim = "rbxassetid://87417738818081",
+--         fifthDangerAnim = "rbxassetid://130958738660069",
+--         sixthDangerAnim = "rbxassetid://91143601400588",
+--         seventhDangerAnim = "rbxassetid://91905726056850",
+--         eighthDangerAnim = "rbxassetid://138957995371428",
+--         ninthDangerAnim = "rbxassetid://106252976689352",
+--         dangerTime = 0.10
+--     }
+-- }
+--
+-- function _0xa299._0x5006()
+--     for beastName, config in pairs(_0xa299._0x4686) do
+--         -- Check if this beast is selected in the dropdown
+--         if not _0xa299._0xf9c2.selectedBeasts[beastName] then
+--             continue
+--         end
+--
+--         -- Iterate through ALL children with this name (inner and outer beasts can share names)
+--         for _, beast in ipairs(workspace:GetChildren()) do
+--             if beast.Name == config.workspaceName then
+--                 -- Check if beast has Awake attribute set to true (already claimed)
+--                 -- Only skip if onlyTargetInactive is enabled
+--                 if _0xa299._0xf9c2.onlyTargetInactive then
+--                     local awakeAttr = beast:GetAttribute("Awake")
+--                     if awakeAttr == true then
+--                         -- Beast is awake/claimed, skip it
+--                         continue
+--                     end
+--                 end
+--
+--                 local humanoid = beast:FindFirstChildOfClass("Humanoid")
+--                 local hrp = beast:FindFirstChild("HumanoidRootPart") or beast:FindFirstChild("Torso")
+--
+--                 if humanoid and hrp and humanoid.Health > 0 then
+--                     -- Check if beast is inner beast based on distance from spawn location
+--                     local spawnLoc = _0xa299._0xf9c2.beastSpawnLocations[beastName]
+--                     local isInnerBeast = false
+--                     if spawnLoc then
+--                         local distance = (hrp.Position - spawnLoc).Magnitude
+--                         isInnerBeast = distance > 600
+--                     end
+--
+--                     if _0xa299._0xf9c2.targetInnerBeasts then
+--                         -- Only target inner beasts (outside 600 studs of spawn)
+--                         if not isInnerBeast then
+--                             continue
+--                         end
+--                     else
+--                         -- Only target regular beasts (within 600 studs of spawn)
+--                         if isInnerBeast then
+--                             continue
+--                         end
+--                     end
+--                     return beast, beastName, config, hrp, humanoid
+--                 end
+--             end
+--         end
+--     end
+--     return nil
+-- end
+--
+-- function _0xa299._0xa2bb()
+--     if _0xa299._0xf9c2.farming then return end
+--     _0xa299._0xf9c2.farming = true
+--
+--     _0xa299._0xf9c2.connection = task.spawn(function()
+--         -- Force load into game FIRST before anything else
+--         local RS = _0xa299._0xe08d
+--         if not RS.Loaded:FindFirstChild(_0xa299._0x396d.Name) then
+--             if workspace.CurrentCamera.CameraType == Enum.CameraType.Custom then
+--                 if _0xa299._0xb1a4 then _0xa299._0xb1a4("forceload") end
+--                 _0xa299._0x8545:Notify("Farm", "Force loading into game", 3, "info")
+--
+--                 task.spawn(function()
+--                     pcall(function()
+--                         RS:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer("LoadedIn")
+--                     end)
+--                 end)
+--
+--                 pcall(function()
+--                     RS:WaitForChild("Events"):WaitForChild("DataEvent"):FireServer("LoadedIn")
+--                 end)
+--
+--                 task.wait()
+--
+--                 if _0xa299._0x396d.PlayerGui and _0xa299._0x396d.PlayerGui:FindFirstChild("ClientGui") then
+--                     local menuScreen = _0xa299._0x396d.PlayerGui.ClientGui:FindFirstChild("MenuScreen")
+--                     if menuScreen then menuScreen.Visible = false end
+--                 end
+--
+--                 if _0xa299._0x396d:FindFirstChild("SoundPlaylist") then
+--                     local menuTrack = _0xa299._0x396d.SoundPlaylist:FindFirstChild("MenuTrack")
+--                     if menuTrack then menuTrack.Playing = false end
+--                 end
+--
+--                 -- Gets past the v1551 loading screen first, then waits for the
+--                 -- function to exist. See _0xa299._0xLoadIntoGame.
+--                 _0xa299._0xLoadIntoGame()
+--
+--                 local hrp = _0xa299._0x396d.Character and _0xa299._0x396d.Character:FindFirstChild("HumanoidRootPart")
+--                 if hrp then
+--                     hrp.CFrame = _0xa299._0xdde4()
+--                 end
+--
+--                 task.wait(2)
+--
+--                 -- Wait for character to be ready
+--                 if not _0xa299._0x396d.Character then
+--                     _0xa299._0x396d.CharacterAdded:Wait()
+--                 end
+--                 hrp = _0xa299._0x396d.Character:WaitForChild("HumanoidRootPart", 5)
+--                 if hrp then
+--                     _0xa299._0x8545:Notify("Farm", "Force load complete", 3, "check")
+--                 end
+--             end
+--         end
+--
+--         -- Check for tailed beast
+--         local beast, beastName, config, beastHrp, beastHumanoid = _0xa299._0x5006()
+--
+--         if not beast then
+--             if _0xa299._0xb1a4 then _0xa299._0xb1a4("serverhopping") end
+--             _0xa299._0x8545:Notify("Farm", "No valid Tailed Beast found, server hopping", 3, "info")
+--             task.wait(2)
+--             _0xa299._0xb5ef()
+--             return
+--         end
+--
+--         -- Found a valid tailed beast!
+--         _0xa299._0x8545:Notify("Farm", "Found " .. beastName .. "! Starting farm...", 3, "check")
+--         _0xa299._0xf9c2.currentBeast = beastName
+--         _0xa299._0xf9c2.beastReference = beast
+--         _0xa299._0xf9c2.beastHrpReference = beastHrp
+--
+--         -- Teleport to safespot
+--         local char = _0xa299._0x396d.Character
+--         if char and char:FindFirstChild("HumanoidRootPart") then
+--             char.HumanoidRootPart.CFrame = _0xa299._0xdde4()
+--         end
+--         task.wait(0.5)
+--
+--
+--         -- Enable no fall damage
+--         pcall(function()
+--             _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataEvent"):FireServer("NoFallDamage", true)
+--         end)
+--
+--         -- Get and equip heavy weapon like boss farm
+--         local heavyWeapon = nil
+--         local RS = _0xa299._0xe08d
+--         local DataEvent = RS:WaitForChild("Events"):WaitForChild("DataEvent")
+--
+--         pcall(function()
+--             local remote = RS:WaitForChild("Events"):WaitForChild("DataFunction")
+--             local playerdata = remote:InvokeServer("GetData")
+--             if playerdata and playerdata["CurrentWeapon"] then
+--                 heavyWeapon = playerdata["CurrentWeapon"]
+--                 _0xa299._0xf9c2.heavyWeapon = heavyWeapon
+--                 -- Equip weapon like boss farm does
+--                 local possibleWeapons = {"Golden Zabunagi", "Silver Zabunagi", "Onyx Zabunagi", "Samehada", "Executioner's Blade", "Gunbai", "Silver Kunai", "Golden Kunai", "Onyx Kunai", "Raijin Kunai", "Silver Resanagi", "Golden Resanagi", "Onyx Resanagi", "Kusanagi", "Silver Halberd", "Golden Halberd", "Onyx Halberd", "Adamantine Staff", "Silver Asumai", "Golden Asumai", "Onyx Asumai", "Frozen Executioner's Blade", "Jingle Bell Staff", "Candy Cane Kusanagi", "Nutcracker Raijin", "Tree Samehada", "Gingerbread Gunbai", "Metallic Bow", "Chakra Bow"}
+--                 local weaponToEquip = nil
+--
+--                 for _, weaponName in pairs(possibleWeapons) do
+--                     if heavyWeapon == weaponName then
+--                         weaponToEquip = heavyWeapon
+--                         break
+--                     end
+--                 end
+--
+--                 if weaponToEquip then
+--                     local char = _0xa299._0x396d.Character
+--                     if char then
+--                         local fakeHead = char:FindFirstChild("FakeHead")
+--                         if fakeHead then
+--                             local skillGUI = fakeHead:FindFirstChild("skillGUI")
+--                             if skillGUI and skillGUI:FindFirstChild("skillName") then
+--                                 local equippedWeapon = skillGUI.skillName.Text
+--
+--                                 if equippedWeapon ~= weaponToEquip then
+--                                     task.wait(0.4)
+--                                     DataEvent:FireServer("Item", "Unselected", equippedWeapon)
+--                                     task.wait(0.4)
+--                                     DataEvent:FireServer("Item", "Selected", weaponToEquip)
+--                                     task.wait(0.4)
+--                                     _0xa299._0x8545:Notify("Farm", "Equipped: " .. weaponToEquip, 3, "info")
+--                                 end
+--                             else
+--                                 -- No weapon equipped, just equip
+--                                 DataEvent:FireServer("Item", "Selected", weaponToEquip)
+--                                 task.wait(0.4)
+--                                 _0xa299._0x8545:Notify("Farm", "Equipped: " .. weaponToEquip, 3, "info")
+--                             end
+--                         end
+--                     end
+--                 end
+--             else
+--             end
+--         end)
+--
+--         -- Start infinite M1 loop
+--         _0xa299._0xf9c2.infiniteM1Connection = task.spawn(function()
+--             while _0xa299._0xf9c2.farming do
+--                 -- Check if beast is knocked before attacking
+--                 local beastRef = _0xa299._0xf9c2.beastReference
+--                 if beastRef then
+--                     local settings = beastRef:FindFirstChild("Settings")
+--                     local isKnocked = settings and settings:FindFirstChild("Knocked") and settings.Knocked.Value
+--
+--                     if not isKnocked then
+--                         pcall(function()
+--                             local args = {"CheckMeleeHit", nil, "NormalAttack", false, 2}
+--                             DataEvent:FireServer(unpack(args, 1, 5))
+--                         end)
+--                     end
+--                 end
+--                 task.wait()
+--             end
+--         end)
+--
+--         -- Start chakra sense animation
+--         char = _0xa299._0x396d.Character
+--         if char then
+--             local humanoid = char:FindFirstChild("Humanoid")
+--             if humanoid then
+--                 _0xa299._0xf9c2.animationTrack = _0xa299._0xFarmAnim()
+--
+--             end
+--         end
+--
+--         -- Main farming loop
+--         while _0xa299._0xf9c2.farming do
+--             char = _0xa299._0x396d.Character
+--             local hrp = char and char:FindFirstChild("HumanoidRootPart")
+--             if not hrp then task.wait(1) continue end
+--
+--             -- Re-check beast reference
+--             beast = _0xa299._0xf9c2.beastReference
+--             if not beast or not beast.Parent then
+--                 if _0xa299._0xb1a4 then _0xa299._0xb1a4("serverhopping") end
+--                 _0xa299._0x8545:Notify("Farm", "Tailed Beast gone, server hopping", 3, "info")
+--                 task.wait(2)
+--                 _0xa299._0xb5ef()
+--                 return
+--             end
+--
+--             beastHrp = beast:FindFirstChild("HumanoidRootPart") or beast:FindFirstChild("Torso")
+--             beastHumanoid = beast:FindFirstChildOfClass("Humanoid")
+--
+--             if not beastHrp or not beastHumanoid or beastHumanoid.Health <= 0 then
+--                 if _0xa299._0xb1a4 then _0xa299._0xb1a4("serverhopping") end
+--                 _0xa299._0x8545:Notify("Farm", "Tailed Beast dead, server hopping", 3, "info")
+--                 task.wait(2)
+--                 _0xa299._0xb5ef()
+--                 return
+--             end
+--
+--             -- Check if knocked
+--             local settings = beast:FindFirstChild("Settings")
+--             local isKnocked = settings and settings:FindFirstChild("Knocked") and settings.Knocked.Value
+--
+--             -- Isobu button check - if any button is deactivated, go reactivate them
+--             if beastName == "Isobu" and not _0xa299._0xf9c2.isobuButtonCheckActive then
+--                 local isobuButtons = workspace:FindFirstChild("IsobuButtons")
+--                 if isobuButtons then
+--                     local deactivatedButtons = {}
+--                     for _, button in ipairs(isobuButtons:GetChildren()) do
+--                         if button.Name == "IsobuButton" then
+--                             local activated = button:FindFirstChild("Activated")
+--                             if activated and activated.Value == false then
+--                                 table.insert(deactivatedButtons, button)
+--                             end
+--                         end
+--                     end
+--
+--                     if #deactivatedButtons > 0 then
+--                         _0xa299._0xf9c2.isobuButtonCheckActive = true
+--                         _0xa299._0x8545:Notify("Farm", "Pressing Buttons | " .. #deactivatedButtons .. " buttons...", 3, "info")
+--
+--                         -- Stop dodging if we were
+--                         if _0xa299._0xf9c2.isDodging then
+--                             _0xa299._0xf9c2.isDodging = false
+--                             if _0xa299._0xf9c2.dodgeConnection then
+--                                 pcall(function() task.cancel(_0xa299._0xf9c2.dodgeConnection) end)
+--                                 _0xa299._0xf9c2.dodgeConnection = nil
+--                             end
+--                         end
+--
+--                         -- Enable blocking while pressing buttons if not already blocking
+--                         local wasBlocking = false
+--                         pcall(function()
+--                             local playerSettings = _0xa299._0xe08d.Settings:FindFirstChild(_0xa299._0x396d.Name)
+--                             if playerSettings then
+--                                 local blockingValue = playerSettings:FindFirstChild("Blocking")
+--                                 if blockingValue then
+--                                     wasBlocking = blockingValue.Value
+--                                     if not wasBlocking then
+--                                         _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer("Block", 2)
+--                                     end
+--                                 end
+--                             end
+--                         end)
+--
+--                         -- Teleport to each deactivated button and fire activation
+--                         for _, button in ipairs(deactivatedButtons) do
+--                             if not _0xa299._0xf9c2.farming then break end
+--
+--                             local mainPart = button:FindFirstChild("Main")
+--                             if mainPart then
+--                                 hrp.CFrame = mainPart.CFrame + Vector3.new(0, 3, 0)
+--                                 task.wait(0.2)
+--
+--                                 pcall(function()
+--                                     _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataEvent"):FireServer("ActivateButton", button)
+--                                 end)
+--
+--                                 task.wait(1.5)
+--                             end
+--                         end
+--
+--                         -- Disable blocking after buttons are done (only if we enabled it)
+--                         if not wasBlocking then
+--                             pcall(function()
+--                                 _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer("EndBlock")
+--                             end)
+--                         end
+--
+--                         _0xa299._0x8545:Notify("Farm", "Buttons work again, back to farming", 3, "check")
+--                         _0xa299._0xf9c2.isobuButtonCheckActive = false
+--                         task.wait()
+--                         continue
+--                     end
+--                 end
+--             end
+--
+--             if isKnocked then
+--                 if _0xa299._0xb1a4 then _0xa299._0xb1a4("sealing") end
+--                 _0xa299._0x8545:Notify("Farm", beastName .. " knocked! Preparing Binding Seal...", 3, "check")
+--
+--                 -- Teleport to the beast immediately
+--                 if beastHrp and hrp then
+--                     hrp.CFrame = CFrame.new(beastHrp.Position + Vector3.new(0, 3, 0), beastHrp.Position)
+--                 end
+--
+--                 -- Stop animation
+--                 if _0xa299._0xf9c2.animationTrack then
+--                     pcall(function() _0xa299._0xf9c2.animationTrack:Stop() end)
+--                 end
+--
+--                 -- Disconnect stoppinganim to allow normal animations
+--                 if _0xa299._0xf9c2.stoppinganim then
+--                     pcall(function() _0xa299._0xf9c2.stoppinganim:Disconnect() end)
+--                     _0xa299._0xf9c2.stoppinganim = nil
+--                 end
+--
+--                 -- Stop infinite M1 loop
+--                 if _0xa299._0xf9c2.infiniteM1Connection then
+--                     pcall(function() task.cancel(_0xa299._0xf9c2.infiniteM1Connection) end)
+--                     _0xa299._0xf9c2.infiniteM1Connection = nil
+--                 end
+--
+--                 -- Minimal wait after knocked
+--                 task.wait()
+--
+--                 -- Spam Seal for 12 seconds 
+--                 local sealStartTime = tick()
+--                 while tick() - sealStartTime < 12 do
+--                     -- Check distance from beast, teleport back if more than 60 studs away
+--                     if beastHrp and hrp then
+--                         local distance = (hrp.Position - beastHrp.Position).Magnitude
+--                         if distance > 60 then
+--                             hrp.CFrame = CFrame.new(beastHrp.Position + Vector3.new(0, 3, 0), beastHrp.Position)
+--                         end
+--                     end
+--
+--                     pcall(function()
+--                         if _0xa299._0xf9c2.sealMethod == "Wood Seal" then
+--                             _0xa299._0xe08d.Events.DataEvent:FireServer("startSkill", "Wood Seal")
+--                         elseif _0xa299._0xf9c2.useInstaCast then
+--                             local myPos = hrp.Position
+--                             _0xa299._0xe08d.Events.DataEvent:FireServer("startSkill", "Binding Seal", Vector3.new(myPos.X, myPos.Y, myPos.Z), true, "MouseButton2")
+--                         else
+--                             _0xa299._0xe08d.Events.DataEvent:FireServer("startSkill", "Binding Seal", hrp.CFrame)
+--                             task.wait()
+--                             _0xa299._0xe08d.Events.DataEvent:FireServer("ReleaseSkill")
+--                         end
+--                     end)
+--                     task.wait()
+--                 end
+--
+--                 if _0xa299._0xb1a4 then _0xa299._0xb1a4("serverhopping") end
+--                 _0xa299._0x8545:Notify("Farm", "Seal used, server hopping", 3, "check")
+--
+--                 -- Teleport away and server hop
+--                 hrp.CFrame = _0xa299._0xdde4()
+--                 task.wait(1)
+--                 _0xa299._0xb5ef()
+--                 return
+--             end
+--
+--             -- Not knocked, farm the beast with FAST ROTATION/FLICKER movement
+--             _0xa299._0xVelSettle(hrp)
+--
+--             -- Animation-based dodging (same as boss farm)
+--             local extraOffset = 0
+--             local isDodging = false
+--             if config.dangerAnim and beastHumanoid then
+--                 local animator = beastHumanoid:FindFirstChildOfClass("Animator")
+--                 if animator then
+--                     local dangerTime = config.dangerTime or 0.2
+--
+--                     -- Check primary danger animation
+--                     for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+--                         if track.Animation.AnimationId == config.dangerAnim then
+--                             if track.TimePosition > dangerTime and track.TimePosition < 2.7 then
+--                                 extraOffset = 300
+--                                 isDodging = true
+--                                 break
+--                             end
+--                         end
+--                     end
+--
+--                     -- Check second danger animation
+--                     if extraOffset == 0 and config.secondDangerAnim then
+--                         for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+--                             if track.Animation.AnimationId == config.secondDangerAnim then
+--                                 if track.TimePosition > dangerTime and track.TimePosition < 2.7 then
+--                                     extraOffset = 300
+--                                     isDodging = true
+--                                     if beastName == "Isobu" then
+--                                         _0xa299._0xf9c2.isobu2ndDangerHoldUntil = tick() + 6
+--                                     end
+--                                     break
+--                                 end
+--                             end
+--                         end
+--                         -- Isobu: keep dodging if still within 2nd anim hold period
+--                         if extraOffset == 0 and beastName == "Isobu" and tick() < (_0xa299._0xf9c2.isobu2ndDangerHoldUntil or 0) then
+--                             extraOffset = 300
+--                             isDodging = true
+--                         end
+--                     end
+--
+--                     -- Check third danger animation
+--                     if extraOffset == 0 and config.thirdDangerAnim then
+--                         for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+--                             if track.Animation.AnimationId == config.thirdDangerAnim then
+--                                 if track.TimePosition > dangerTime and track.TimePosition < 2.7 then
+--                                     extraOffset = 300
+--                                     isDodging = true
+--                                     break
+--                                 end
+--                             end
+--                         end
+--                     end
+--
+--                     -- Check fourth danger animation (with hold timer)
+--                     -- These specific anims need cycle-all-corners dodge: Matatabi 4th, Shukaku 4th
+--                     if extraOffset == 0 and config.fourthDangerAnim then
+--                         for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+--                             if track.Animation.AnimationId == config.fourthDangerAnim then
+--                                 if track.TimePosition > dangerTime and track.TimePosition < 2.7 then
+--                                     extraOffset = 300
+--                                     isDodging = true
+--                                     if beastName == "Matatabi" then
+--                                         _0xa299._0xf9c2.matatabi4thDangerHoldUntil = tick() + 9
+--                                         _0xa299._0xf9c2.cycleAllCorners = true
+--                                     elseif beastName == "Shukaku" then
+--                                         _0xa299._0xf9c2.shukaku4thDangerHoldUntil = tick() + 9
+--                                         _0xa299._0xf9c2.cycleAllCorners = true
+--                                     elseif beastName == "Isobu" then
+--                                         _0xa299._0xf9c2.isobu4thDangerHoldUntil = tick() + 9
+--                                     end
+--                                     break
+--                                 end
+--                             end
+--                         end
+--                         -- Keep offset if still within hold period
+--                         if extraOffset == 0 and beastName == "Matatabi" and tick() < _0xa299._0xf9c2.matatabi4thDangerHoldUntil then
+--                             extraOffset = 300
+--                             isDodging = true
+--                             _0xa299._0xf9c2.cycleAllCorners = true
+--                         end
+--                         if extraOffset == 0 and beastName == "Shukaku" and tick() < _0xa299._0xf9c2.shukaku4thDangerHoldUntil then
+--                             extraOffset = 300
+--                             isDodging = true
+--                             _0xa299._0xf9c2.cycleAllCorners = true
+--                         end
+--                         if extraOffset == 0 and beastName == "Isobu" and tick() < _0xa299._0xf9c2.isobu4thDangerHoldUntil then
+--                             extraOffset = 300
+--                             isDodging = true
+--                         end
+--                     end
+--
+--                     -- Check fifth danger animation (Shukaku only)
+--                     if extraOffset == 0 and config.fifthDangerAnim then
+--                         for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+--                             if track.Animation.AnimationId == config.fifthDangerAnim then
+--                                 if track.TimePosition > dangerTime and track.TimePosition < 2.7 then
+--                                     extraOffset = 300
+--                                     isDodging = true
+--                                     break
+--                                 end
+--                             end
+--                         end
+--                     end
+--
+--                     -- Check sixth danger animation (Isobu or Shukaku)
+--                     if extraOffset == 0 and config.sixthDangerAnim then
+--                         for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+--                             if track.Animation.AnimationId == config.sixthDangerAnim then
+--                                 if track.TimePosition > dangerTime and track.TimePosition < 2.7 then
+--                                     extraOffset = 300
+--                                     isDodging = true
+--                                     -- Shukaku 6th danger anim: 5s extended dodge
+--                                     if beastName == "Shukaku" then
+--                                         _0xa299._0xf9c2.shukaku6thDangerHoldUntil = tick() + 5
+--                                     end
+--                                     break
+--                                 end
+--                             end
+--                         end
+--                         -- Shukaku: keep dodging if still within 6th anim hold period
+--                         if extraOffset == 0 and beastName == "Shukaku" and tick() < (_0xa299._0xf9c2.shukaku6thDangerHoldUntil or 0) then
+--                             extraOffset = 300
+--                             isDodging = true
+--                         end
+--                     end
+--
+--                     -- Check seventh danger animation (Isobu)
+--                     if extraOffset == 0 and config.seventhDangerAnim then
+--                         for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+--                             if track.Animation.AnimationId == config.seventhDangerAnim then
+--                                 if track.TimePosition > dangerTime and track.TimePosition < 2.7 then
+--                                     extraOffset = 300
+--                                     isDodging = true
+--                                     break
+--                                 end
+--                             end
+--                         end
+--                     end
+--
+--                     -- Check eighth danger animation (Isobu)
+--                     if extraOffset == 0 and config.eighthDangerAnim then
+--                         for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+--                             if track.Animation.AnimationId == config.eighthDangerAnim then
+--                                 if track.TimePosition > dangerTime and track.TimePosition < 2.7 then
+--                                     extraOffset = 300
+--                                     isDodging = true
+--                                     break
+--                                 end
+--                             end
+--                         end
+--                     end
+--
+--                     -- Check ninth danger animation (Isobu) - with 6 second extended dodge + cycle all corners
+--                     if extraOffset == 0 and config.ninthDangerAnim then
+--                         for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+--                             if track.Animation.AnimationId == config.ninthDangerAnim then
+--                                 if track.TimePosition > dangerTime and track.TimePosition < 2.7 then
+--                                     extraOffset = 300
+--                                     isDodging = true
+--                                     _0xa299._0xf9c2.isobu9thDangerHoldUntil = tick() + 6
+--                                     _0xa299._0xf9c2.cycleAllCorners = true
+--                                     break
+--                                 end
+--                             end
+--                         end
+--                         -- Isobu: keep dodging if still within hold period
+--                         if extraOffset == 0 and beastName == "Isobu" and tick() < (_0xa299._0xf9c2.isobu9thDangerHoldUntil or 0) then
+--                             extraOffset = 300
+--                             isDodging = true
+--                             _0xa299._0xf9c2.cycleAllCorners = true
+--                         end
+--                     end
+--                 end
+--             end
+--
+--             -- If dodging, start teleport loop through dodge positions
+--             if isDodging then
+--                 if not _0xa299._0xf9c2.isDodging then
+--                     _0xa299._0xf9c2.isDodging = true
+--                     _0xa299._0xf9c2.cycleCornerIndex = 1
+--                     -- Start dodge teleport loop
+--                     _0xa299._0xf9c2.dodgeConnection = task.spawn(function()
+--                         local positions = _0xa299._0xf9c2.dodgePositions[beastName]
+--                         if not positions then
+--                             -- Fallback to safespot if no positions defined
+--                             while _0xa299._0xf9c2.isDodging and _0xa299._0xf9c2.farming do
+--                                 hrp.CFrame = _0xa299._0xdde4()
+--                                 task.wait(0.2)
+--                             end
+--                             return
+--                         end
+--
+--                         while _0xa299._0xf9c2.isDodging and _0xa299._0xf9c2.farming do
+--                             local bestIndex = 1
+--
+--                             -- Check if we should cycle through ALL corners (for specific danger anims)
+--                             if _0xa299._0xf9c2.cycleAllCorners then
+--                                 -- Cycle through all corners sequentially
+--                                 bestIndex = _0xa299._0xf9c2.cycleCornerIndex or 1
+--                                 _0xa299._0xf9c2.cycleCornerIndex = (_0xa299._0xf9c2.cycleCornerIndex % #positions) + 1
+--                             else
+--                                 -- Normal behavior: find farthest from beast
+--                                 local beastPos = beastHrp and beastHrp.Position or Vector3.new(0, 0, 0)
+--                                 local closestIndex = 1
+--                                 local closestDistance = math.huge
+--
+--                                 for i, pos in ipairs(positions) do
+--                                     local dist = (pos.Position - beastPos).Magnitude
+--                                     if dist < closestDistance then
+--                                         closestDistance = dist
+--                                         closestIndex = i
+--                                     end
+--                                 end
+--
+--                                 -- Find farthest position from beast, excluding closest to beast AND last used
+--                                 local bestDistance = 0
+--
+--                                 for i, pos in ipairs(positions) do
+--                                     if i ~= closestIndex and i ~= _0xa299._0xf9c2.lastDodgeIndex then
+--                                         local dist = (pos.Position - beastPos).Magnitude
+--                                         if dist > bestDistance then
+--                                             bestDistance = dist
+--                                             bestIndex = i
+--                                         end
+--                                     end
+--                                 end
+--
+--                                 -- If no valid position found (all excluded), pick any that isn't closest
+--                                 if bestDistance == 0 then
+--                                     for i, pos in ipairs(positions) do
+--                                         if i ~= closestIndex then
+--                                             bestIndex = i
+--                                             break
+--                                         end
+--                                     end
+--                                 end
+--                             end
+--
+--                             _0xa299._0xf9c2.lastDodgeIndex = bestIndex
+--                             if hrp then
+--                                 hrp.CFrame = positions[bestIndex]
+--                             end
+--                             task.wait(0.2)
+--                         end
+--                     end)
+--                 end
+--                 task.wait()
+--                 continue
+--             else
+--                 -- Stop dodging if we were dodging
+--                 if _0xa299._0xf9c2.isDodging then
+--                     _0xa299._0xf9c2.isDodging = false
+--                     _0xa299._0xf9c2.cycleAllCorners = false
+--                     if _0xa299._0xf9c2.dodgeConnection then
+--                         pcall(function() task.cancel(_0xa299._0xf9c2.dodgeConnection) end)
+--                         _0xa299._0xf9c2.dodgeConnection = nil
+--                     end
+--                 end
+--             end
+--
+--             -- Get per-beast rotation settings (fallback to legacy if not found)
+--             local beastRotation = _0xa299._0xf9c2.perBeastRotation[beastName] or {
+--                 speed = _0xa299._0xf9c2.rotationSpeed,
+--                 radius = _0xa299._0xf9c2.rotationRadius,
+--                 offset = _0xa299._0xf9c2.verticalOffset
+--             }
+--
+--             -- Update rotation angle (super fast spinning)
+--             _0xa299._0xf9c2.rotationAngle = _0xa299._0xf9c2.rotationAngle + beastRotation.speed
+--             if _0xa299._0xf9c2.rotationAngle > math.pi * 2 then
+--                 _0xa299._0xf9c2.rotationAngle = _0xa299._0xf9c2.rotationAngle - math.pi * 2
+--             end
+--
+--             local angle = _0xa299._0xf9c2.rotationAngle
+--             local radius = beastRotation.radius
+--             local vertOffset = (config.offset or 5) + beastRotation.offset
+--
+--             -- Add random flicker/jitter for unpredictable movement
+--             local flickerX = 0
+--             local flickerZ = 0
+--             local flickerY = 0
+--             if _0xa299._0xf9c2.flickerEnabled then
+--                 flickerX = (math.random() - 0.5) * 6
+--                 flickerZ = (math.random() - 0.5) * 6
+--                 flickerY = (math.random() - 0.5) * 4
+--             end
+--
+--             -- Calculate position orbiting around beast
+--             local offsetX = math.cos(angle) * radius + flickerX
+--             local offsetZ = math.sin(angle) * radius + flickerZ
+--             local offsetY = vertOffset + flickerY
+--
+--             local orbitPos = beastHrp.Position + Vector3.new(offsetX, offsetY, offsetZ)
+--             hrp.CFrame = CFrame.new(orbitPos, beastHrp.Position)
+--
+--             -- Update status UI with HP
+--             local healthText = math.floor(beastHumanoid.Health) .. "/" .. math.floor(beastHumanoid.MaxHealth)
+--             if _0xa299._0xb1a4 then _0xa299._0xb1a4("farming", beastName, healthText) end
+--
+--             task.wait()
+--         end
+--     end)
+-- end
+--
+-- function _0xa299._0x11ef()
+--     _0xa299._0xf9c2.enabled = false
+--     _0xa299._0xf9c2.farming = false
+--
+--     -- Hide status UI
+--     if _0xa299._0xb1a4 then _0xa299._0xb1a4("disable") end
+--
+--     if _0xa299._0xf9c2.connection then
+--         pcall(function() task.cancel(_0xa299._0xf9c2.connection) end)
+--         _0xa299._0xf9c2.connection = nil
+--     end
+--
+--     if _0xa299._0xf9c2.godmodeConnection then
+--         pcall(function() task.cancel(_0xa299._0xf9c2.godmodeConnection) end)
+--         _0xa299._0xf9c2.godmodeConnection = nil
+--     end
+--
+--     if _0xa299._0xf9c2.infiniteM1Connection then
+--         pcall(function() task.cancel(_0xa299._0xf9c2.infiniteM1Connection) end)
+--         _0xa299._0xf9c2.infiniteM1Connection = nil
+--     end
+--
+--     if _0xa299._0xf9c2.animationTrack then
+--         pcall(function() _0xa299._0xf9c2.animationTrack:Stop() end)
+--         _0xa299._0xf9c2.animationTrack = nil
+--     end
+--
+--     if _0xa299._0xf9c2.stoppinganim then
+--         pcall(function() _0xa299._0xf9c2.stoppinganim:Disconnect() end)
+--         _0xa299._0xf9c2.stoppinganim = nil
+--     end
+--
+--     _0xa299._0xf9c2.currentBeast = nil
+--     _0xa299._0xf9c2.beastReference = nil
+--     _0xa299._0xf9c2.beastHrpReference = nil
+--     _0xa299._0xf9c2.heavyWeapon = nil
+-- end
+--
+-- _0xa299._0x74e9 = _0xa299._0x4f39:AddToggle("Enable Farm", false, function(Value)
+--     _0xa299._0xWM.set("FarmTailedBeast", Value)
+--     if Value then
+--         _0xa299._0xf9c2.enabled = true
+--         _0xa299._0xa2bb()
+--     else
+--         _0xa299._0x11ef()
+--     end
+-- end, {Type = "warning", Text = "Players Can Clip You"})
+--
+-- -- Target selection and seal method both belong to the farm toggle, so they get
+-- -- one gear each rather than stacking eight rows under the switch.
+-- do
+--     local g = _0xa299._0x74e9:AddSettings("Targets")
+--
+--     g:AddMultiDropdown("Beasts", {"Shukaku", "Matatabi", "Isobu"}, {"Shukaku", "Matatabi", "Isobu"}, function(Values)
+--         _0xa299._0xf9c2.selectedBeasts = {}
+--         for _, beast in ipairs(Values) do
+--             _0xa299._0xf9c2.selectedBeasts[beast] = true
+--         end
+--     end)
+--
+--     g:AddDivider()
+--
+--     g:AddToggle("Only Target Unstarted", true, function(Value)
+--         _0xa299._0xf9c2.onlyTargetInactive = Value
+--     end, {Type = "info", Text = "Will Only Target Ones Which are not Started"})
+--
+--     g:AddToggle("Target Inner Beasts", false, function(Value)
+--         _0xa299._0xf9c2.targetInnerBeasts = Value
+--     end, {Type = "info", Text = "Target Inner Beasts ( For Jin Cloak )"})
+--
+--     g:AddDivider()
+--
+--     g:AddDropdown("Method", {"Binding Seal", "Wood Seal"}, "Binding Seal", function(Value)
+--         _0xa299._0xf9c2.sealMethod = Value
+--         _0xa299._0x8545:Notify("Farm", "Seal method set to: " .. Value, 3, "info")
+--     end)
+--
+--     g:AddToggle("Use Insta Cast", false, function(Value)
+--         _0xa299._0xf9c2.useInstaCast = Value
+--     end, {Type = "info", Text = "Uses insta cast for Binding Seal"})
+-- end
+--
+-- -- Per-Beast Rotation Settings UI
+-- _0xa299._0xTBOP:AddLabel("Shukaku")
+-- _0xa299._0xTBOP:AddSlider("Shukaku Speed", 1, 100, 25, function(Value)
+--     _0xa299._0xf9c2.perBeastRotation.Shukaku.speed = Value
+-- end)
+-- _0xa299._0xTBOP:AddSlider("Shukaku Radius", 5, 50, 15, function(Value)
+--     _0xa299._0xf9c2.perBeastRotation.Shukaku.radius = Value
+-- end)
+-- _0xa299._0xTBOP:AddSlider("Shukaku Offset", -50, 50, 0, function(Value)
+--     _0xa299._0xf9c2.perBeastRotation.Shukaku.offset = Value
+-- end)
+--
+-- _0xa299._0xTBOP:AddDivider()
+--
+-- _0xa299._0xTBOP:AddLabel("Matatabi")
+-- _0xa299._0xTBOP:AddSlider("Matatabi Speed", 1, 100, 25, function(Value)
+--     _0xa299._0xf9c2.perBeastRotation.Matatabi.speed = Value
+-- end)
+-- _0xa299._0xTBOP:AddSlider("Matatabi Radius", 5, 50, 15, function(Value)
+--     _0xa299._0xf9c2.perBeastRotation.Matatabi.radius = Value
+-- end)
+-- _0xa299._0xTBOP:AddSlider("Matatabi Offset", -50, 50, 0, function(Value)
+--     _0xa299._0xf9c2.perBeastRotation.Matatabi.offset = Value
+-- end)
+--
+-- _0xa299._0xTBOP:AddDivider()
+--
+-- _0xa299._0xTBOP:AddLabel("Isobu")
+-- _0xa299._0xTBOP:AddSlider("Isobu Speed", 1, 100, 25, function(Value)
+--     _0xa299._0xf9c2.perBeastRotation.Isobu.speed = Value
+-- end)
+-- _0xa299._0xTBOP:AddSlider("Isobu Radius", 5, 50, 15, function(Value)
+--     _0xa299._0xf9c2.perBeastRotation.Isobu.radius = Value
+-- end)
+-- _0xa299._0xTBOP:AddSlider("Isobu Offset", -50, 50, 0, function(Value)
+--     _0xa299._0xf9c2.perBeastRotation.Isobu.offset = Value
+-- end)
 
 --[[DUAL_FARM_REMOVED
 function _0xa299._0xDualFarmLog(message)
