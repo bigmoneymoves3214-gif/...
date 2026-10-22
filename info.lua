@@ -21444,10 +21444,16 @@ _0xa299._0xc2d2 = {
     action = "none"
 }
 
-_0xa299._0x8643 = nil
+_0xa299._0x8643 = nil      -- PlayerAdded connection
+_0xa299._0xModScan = nil   -- periodic re-scan task
+_0xa299._0xModSeen = {}    -- userId -> true, so one mod is announced once
+_0xa299._0xModRankCache = {}
 
+-- Names. maxy1221648 is not a guess: the game's own client hardcodes it
+-- alongside its Dev/Admin checks (gamescript.txt:14055).
 _0xa299._0xf10e = {
     "CauanMuniz",
+    "maxy1221648",
 }
 
 _0xa299._0xa8de = {
@@ -21477,10 +21483,58 @@ _0xa299._0xa8de = {
     1720951317,
     124184565,
     1497935663,
+    231759738,   -- maxy1221648, resolved from the name above
 }
+
+-- Anything the user adds in the Watchlist box. Names or UserIds.
+_0xa299._0xModWatchNames = {}
+_0xa299._0xModWatchIds = {}
+
+---------------------------------------------------------------------
+-- WHICH GROUP
+--
+-- This used to check group 4509055 with `rank ~= 0`. That group is
+-- "YEET! DIS! LOL!CLUB!" owned by xhuggy - nothing to do with this game - so
+-- the group half of the detector could never fire on a real staff member, and
+-- would instead flag anyone who happened to be in that random group. Verified
+-- live 2026-10-22.
+--
+-- The real group is the PLACE'S OWNER: game.CreatorId = 7450839 "-Bloodlines-"
+-- (owner ArkhamDeluxe). Read at runtime from CreatorId so it cannot go stale
+-- if the place is ever moved, with the measured id as the fallback.
+--
+-- And it needs a THRESHOLD, not `~= 0`. The role ladder is:
+--     1 = Member (public - group-reward joiners, not staff)
+--   200 = Tester
+--   250 = Developer
+--   252 = Senior Developer
+--   255 = Owner
+-- so rank >= 200 is "staff", and plain Members are ignored.
+--
+-- Note the game ALSO has its own server-side moderator list, which is what
+-- AmIModerator reads (returning false, or "JMod"/"Mod"/"SeniorMod"/"Admin"/
+-- "Dev"). That remote only ever reports on OURSELVES - there is no remote,
+-- attribute or GUI that tells a client another player's moderator level - so
+-- group rank plus the id/name lists is all that is actually available.
+---------------------------------------------------------------------
+_0xa299._0xModGroupFallback = 7450839
+_0xa299._0xModGroupMinRank = 200
+_0xa299._0xModRescan = 20   -- seconds between re-sweeps
+
+function _0xa299._0xModGroupId()
+    if game.CreatorType == Enum.CreatorType.Group and game.CreatorId and game.CreatorId > 0 then
+        return game.CreatorId
+    end
+    return _0xa299._0xModGroupFallback
+end
 
 function _0xa299._0xf87b(userId)
     for _, modId in ipairs(_0xa299._0xa8de) do
+        if modId == userId then
+            return true
+        end
+    end
+    for _, modId in ipairs(_0xa299._0xModWatchIds) do
         if modId == userId then
             return true
         end
@@ -21489,30 +21543,140 @@ function _0xa299._0xf87b(userId)
 end
 
 function _0xa299._0xbea1(playerName)
+    local lower = string.lower(playerName)
     for _, name in ipairs(_0xa299._0xf10e) do
-        if string.lower(name) == string.lower(playerName) then
+        if string.lower(name) == lower then
+            return true
+        end
+    end
+    for _, name in ipairs(_0xa299._0xModWatchNames) do
+        if string.lower(name) == lower then
             return true
         end
     end
     return false
 end
 
-function _0xa299._0x1a55_clothing(plr)
-    local success, result = pcall(function()
-        local char = workspace:FindFirstChild(plr.Name)
-        if char then
-            local clothing = char:GetAttribute("Clothing")
-            if clothing then
-                local clothingLower = string.lower(clothing)
-                if clothingLower == "jiraya" or clothingLower == "kimono" or clothingLower == "blue  ninja" or clothingLower == "boruto's outfit" or clothingLower == "knucklehead" or clothingLower == "mitsuki's outfit" or clothingLower == "medic" or clothingLower == "sagemadara" or clothingLower == "sarada's outfit" then
-                    return true
-                end
-            end
-        end
-        return false
+-- Group rank, cached. GetRankInGroup is a web call (~95 ms measured), and a
+-- full 20-player sweep was taking 1.8 s; the periodic re-scan would pay that
+-- over and over otherwise. A failed call is NOT cached, so a transient web
+-- error gets retried instead of marking the player clean forever - that was
+-- the other way a real mod could slip through.
+function _0xa299._0xModRank(plr)
+    local cached = _0xa299._0xModRankCache[plr.UserId]
+    if cached then return cached end
+
+    local ok, rank = pcall(function()
+        return plr:GetRankInGroup(_0xa299._0xModGroupId())
     end)
-    return success and result
+    if not ok or type(rank) ~= "number" then return nil end
+
+    _0xa299._0xModRankCache[plr.UserId] = rank
+    return rank
 end
+
+---------------------------------------------------------------------
+-- MOD-ONLY OUTFITS
+--
+-- These really are staff-only, and the game's own data says so. Two groups:
+--
+-- 1. MOD SHOP outfits. GameManager.Clothing marks each of these
+--    Description = "Mod Shop Outfit." with Exclusive = true, and the Mod Shop
+--    is the staff-only shop behind the ModShopData remote, which the client
+--    only ever populates inside its moderator-gated block
+--    (gamescript.txt:14138). Full list as of v1551: Boruto's Outfit, Jiraiya,
+--    Kimono, Mitsuki's Outfit, Sarada's Outfit.
+--
+--    Note "Jiraiya". The old list spelled it "Jiraya", one 'i' short, so that
+--    entry could never match anything.
+--
+-- 2. NOT OBTAINABLE AT ALL. These exist as assets in
+--    ReplicatedStorage.App.Clothing but have NO entry in GameManager.Clothing,
+--    so they carry no price and no normal player can equip them: "Blue  Ninja"
+--    (two spaces - that is genuinely the name), Knucklehead, Medic, SageMadara.
+--
+-- A correction on my part: I briefly removed this check after finding all of
+-- these sitting in ReplicatedStorage.App.Clothing next to ordinary outfits.
+-- That folder is only the renderable ASSETS for anything anyone might be
+-- wearing; the obtainable list is GameManager.Clothing, and 12 of the folder's
+-- 78 entries have no entry there at all.
+--
+-- To regenerate after a game update: walk GameManager.Clothing for a
+-- Description containing "Mod Shop" to get group 1, and diff the asset folder
+-- against that table's keys to get group 2.
+--
+-- Medic is also what the Medic NPC wears, which is harmless here because this
+-- only ever runs over Players:GetPlayers() - an NPC cannot reach it.
+---------------------------------------------------------------------
+_0xa299._0xModOutfits = {
+    -- Mod Shop (Exclusive, "Mod Shop Outfit.")
+    "Boruto's Outfit",
+    "Jiraiya",
+    "Kimono",
+    "Mitsuki's Outfit",
+    "Sarada's Outfit",
+    -- asset-only, absent from GameManager.Clothing
+    "Blue  Ninja",
+    "Knucklehead",
+    "Medic",
+    "SageMadara",
+}
+
+-- What is this player wearing? Settings.<name>.Clothing is a replicated
+-- StringValue and is readable for EVERY player (measured 15/15, including one
+-- whose character was not streamed), so it is tried first. The character
+-- attribute is the fallback. The old check only ever read
+-- workspace[plr.Name]'s attribute, which is absent for an unstreamed player -
+-- so it silently found nothing for exactly the distant players you would most
+-- want to catch.
+function _0xa299._0xPlayerOutfit(plr)
+    local st = _0xa299._0xe08d:FindFirstChild("Settings")
+    local ps = st and st:FindFirstChild(plr.Name)
+    local cv = ps and ps:FindFirstChild("Clothing")
+    if cv and cv.Value and cv.Value ~= "" then return cv.Value end
+
+    local char = plr.Character or workspace:FindFirstChild(plr.Name)
+    local attr = char and char:GetAttribute("Clothing")
+    if attr and attr ~= "" then return attr end
+
+    return nil
+end
+
+function _0xa299._0xModOutfit(plr)
+    local worn = _0xa299._0xPlayerOutfit(plr)
+    if not worn then return nil end
+
+    local lower = string.lower(worn)
+    for _, name in ipairs(_0xa299._0xModOutfits) do
+        if string.lower(name) == lower then return worn end
+    end
+    return nil
+end
+
+-- nil if clean, else a short reason for the notification.
+function _0xa299._0xModReason(plr)
+    if plr == _0xa299._0x396d then return nil end
+
+    if _0xa299._0xf87b(plr.UserId) then return "known id" end
+    if _0xa299._0xbea1(plr.Name) then return "known name" end
+
+    local outfit = _0xa299._0xModOutfit(plr)
+    if outfit then return "mod outfit: " .. outfit end
+
+    local rank = _0xa299._0xModRank(plr)
+    if rank and rank >= _0xa299._0xModGroupMinRank then
+        return "group rank " .. tostring(rank)
+    end
+
+    return nil
+end
+
+-- Unrelated but easy to confuse with the outfit check above: GameManager.Clothing
+-- also carries ObserveBlock (Akatsuki Leader, Ascended Akatsuki Leader) and
+-- ObserveBlur (Akatsuki Cloak, Ascended Akatsuki Cloak, Ascended Snow Kage,
+-- Ascended Anbu). Those stop OTHER PLAYERS' Chakra Sense from watching the
+-- WEARER (gamescript.txt:10185) - anti-spy gear for us, not a marker of staff,
+-- and real moderators bypass both flags anyway.
 
 -- REMOVED: "V2 Server Hop" (_0xa299._0xSRV2), 2026-10-21.
 -- The V1/V2 split is obsolete: V2 existed only to merge
@@ -21649,60 +21813,71 @@ function _0xa299._0x89c4(modName)
     end
 end
 
+-- Check one player and react. Each mod is announced once, so the periodic
+-- re-scan does not re-notify (or re-hop) on somebody already dealt with.
+function _0xa299._0xModCheck(plr)
+    if _0xa299._0xc2d2.action == "none" then return false end
+    if _0xa299._0xModSeen[plr.UserId] then return false end
+
+    local reason = _0xa299._0xModReason(plr)
+    if not reason then return false end
+
+    _0xa299._0xModSeen[plr.UserId] = true
+    _0xa299._0x89c4(plr.Name .. " (" .. reason .. ")")
+    return true
+end
+
 function _0xa299._0x22a2()
-    if _0xa299._0x8643 then return end
     if _0xa299._0xc2d2.action == "none" then return end
-    
-    -- Check existing _0xa299._0x71bb
+
+    -- Sweep whoever is already here.
     for _, plr in ipairs(_0xa299._0x71bb:GetPlayers()) do
-        if plr ~= _0xa299._0x396d then
-            if _0xa299._0xbea1(plr.Name) or _0xa299._0xf87b(plr.UserId) or _0xa299._0x1a55_clothing(plr) then
-                _0xa299._0x89c4(plr.Name)
-                return
-            end
-            
-            local success, rank = pcall(function()
-                return plr:GetRankInGroup(4509055)
-            end)
-            
-            if success and rank ~= 0 then
-                _0xa299._0x89c4(plr.Name)
-                return
-            end
-        end
+        if _0xa299._0xModCheck(plr) then return end
     end
-    
-    -- Monitor for new _0xa299._0x71bb
-    _0xa299._0x8643 = _0xa299._0x71bb.PlayerAdded:Connect(function(plr)
-        if _0xa299._0xc2d2.action == "none" then
-            if _0xa299._0x8643 then
-                _0xa299._0x8643:Disconnect()
-                _0xa299._0x8643 = nil
-            end
-            return
-        end
-        
-        -- Wait for character to load to check clothing
-        task.delay(2, function()
+
+    if not _0xa299._0x8643 then
+        _0xa299._0x8643 = _0xa299._0x71bb.PlayerAdded:Connect(function(plr)
             if _0xa299._0xc2d2.action == "none" then return end
-            if _0xa299._0x1a55_clothing(plr) then
-                _0xa299._0x89c4(plr.Name)
-            end
+            -- The id and name tests are instant; the group call is a web
+            -- request, so give it its own thread rather than stalling the
+            -- PlayerAdded signal for everything else connected to it.
+            --
+            -- Checked twice: their Clothing value is not populated the instant
+            -- they join, so the outfit test would miss on the first pass. The
+            -- 20 s re-sweep would eventually catch it, but a mod is worth
+            -- knowing about sooner than that.
+            task.spawn(function()
+                pcall(function() _0xa299._0xModCheck(plr) end)
+                task.wait(3)
+                if plr.Parent and _0xa299._0xc2d2.action ~= "none" then
+                    pcall(function() _0xa299._0xModCheck(plr) end)
+                end
+            end)
         end)
-        
-        if _0xa299._0xbea1(plr.Name) or _0xa299._0xf87b(plr.UserId) then
-            _0xa299._0x89c4(plr.Name)
-            return
-        end
-        
-        local success, rank = pcall(function()
-            return plr:GetRankInGroup(4509055)
-        end)
-        
-        if success and rank ~= 0 then
-            _0xa299._0x89c4(plr.Name)
-        end
+    end
+
+    _0xa299._0x71bb.PlayerRemoving:Connect(function(plr)
+        _0xa299._0xModRankCache[plr.UserId] = nil
+        _0xa299._0xModSeen[plr.UserId] = nil
     end)
+
+    -- Periodic re-sweep. The one-shot scan plus PlayerAdded used to be the
+    -- whole detector, so a group lookup that failed while a mod was joining
+    -- meant that mod was never looked at again. Ranks are cached, so a repeat
+    -- sweep with nobody new costs nothing.
+    if not _0xa299._0xModScan then
+        _0xa299._0xModScan = task.spawn(function()
+            while _0xa299._0xc2d2.action ~= "none" do
+                task.wait(_0xa299._0xModRescan)
+                if _0xa299._0xc2d2.action == "none" then break end
+                for _, plr in ipairs(_0xa299._0x71bb:GetPlayers()) do
+                    if _0xa299._0xc2d2.action == "none" then break end
+                    pcall(function() _0xa299._0xModCheck(plr) end)
+                end
+            end
+            _0xa299._0xModScan = nil
+        end)
+    end
 end
 
 function _0xa299._0xc6be()
@@ -21710,6 +21885,11 @@ function _0xa299._0xc6be()
         _0xa299._0x8643:Disconnect()
         _0xa299._0x8643 = nil
     end
+    if _0xa299._0xModScan then
+        pcall(function() task.cancel(_0xa299._0xModScan) end)
+        _0xa299._0xModScan = nil
+    end
+    _0xa299._0xModSeen = {}
 end
 
 _0xa299._0xb87d:AddDropdown("Moderator Action", {'None', 'Notify', 'Kick', 'Server Hop'}, 'None', function(Value)
@@ -21720,13 +21900,73 @@ _0xa299._0xb87d:AddDropdown("Moderator Action", {'None', 'Notify', 'Kick', 'Serv
         ['Server Hop'] = '_0xa299._0xb5ef'
     }
     _0xa299._0xc2d2.action = actionMap[Value] or 'none'
-    
+
     _0xa299._0xc6be()
     if _0xa299._0xc2d2.action ~= 'none' then
         _0xa299._0x22a2()
     end
-    
+
     _0xa299._0x8545:Notify("Security", "Moderator action set to: " .. Value, 3, "shield")
+end)
+
+-- Staff change over time and the game tells a client nothing about who they
+-- are, so the lists have to be editable from the outside. Accepts names and
+-- UserIds, comma separated, mixed freely.
+_0xa299._0xb87d:AddInput("Watchlist", "name, 12345678, name2", function(Value)
+    local names, ids = {}, {}
+    for entry in tostring(Value or ""):gmatch("[^,]+") do
+        entry = entry:match("^%s*(.-)%s*$")
+        if entry ~= "" then
+            local asId = tonumber(entry)
+            if asId then
+                ids[#ids + 1] = asId
+            else
+                names[#names + 1] = entry
+            end
+        end
+    end
+    _0xa299._0xModWatchNames = names
+    _0xa299._0xModWatchIds = ids
+
+    -- Drop the "already handled" set so the new entries get checked against
+    -- people who are in the server right now.
+    _0xa299._0xModSeen = {}
+    if _0xa299._0xc2d2.action ~= "none" then
+        for _, plr in ipairs(_0xa299._0x71bb:GetPlayers()) do
+            pcall(function() _0xa299._0xModCheck(plr) end)
+        end
+    end
+
+    _0xa299._0x8545:Notify("Security",
+        ("Watchlist: %d names, %d ids"):format(#names, #ids), 3, "shield")
+end)
+
+_0xa299._0xb87d:AddButton("Scan Server Now", function()
+    if _0xa299._0xc2d2.action == "none" then
+        _0xa299._0x8545:Notify("Security", "Pick a Moderator Action first", 3, "warning")
+        return
+    end
+    _0xa299._0xModRankCache = {}
+    _0xa299._0xModSeen = {}
+    task.spawn(function()
+        local n, hit = 0, nil
+        for _, plr in ipairs(_0xa299._0x71bb:GetPlayers()) do
+            if plr ~= _0xa299._0x396d then
+                n = n + 1
+                local ok, reason = pcall(function() return _0xa299._0xModReason(plr) end)
+                if ok and reason and not hit then
+                    hit = plr.Name .. " (" .. reason .. ")"
+                end
+            end
+        end
+        if hit then
+            _0xa299._0xModSeen = {}
+            _0xa299._0x89c4(hit)
+        else
+            _0xa299._0x8545:Notify("Security",
+                ("Checked %d players, no staff found"):format(n), 3, "check")
+        end
+    end)
 end)
 
 
