@@ -12170,8 +12170,10 @@ function _0xa299._0xHotbarBuild()
     gui.DisplayOrder = 100
     gui.Parent = game:GetService("CoreGui")
 
-    -- The Chakra Sense notifier occupies y 20..70, so start below it and the
-    -- two stack cleanly when both are enabled.
+    -- Sits below the Chakra Sense notifier so the two stack cleanly when both
+    -- are enabled. That bar is 34 px tall at y 20 as of the 2026-10-22 restyle
+    -- (it was 50), so it now ends at y 54 and this clears it with room spare.
+    -- See _0xa299._0xCSBarH if that height ever changes again.
     local frame = Instance.new("Frame")
     frame.Position = UDim2.new(0, 0, 0, 78)
     frame.Size = UDim2.new(1, 0, 0, hb.SLOT + 20)
@@ -20557,10 +20559,81 @@ _0xa299._0x1912 = nil
 _0xa299._0x528b = nil
 _0xa299._0xc8cb = nil
 
+---------------------------------------------------------------------
+-- NOTIFIER LOOK
+--
+-- Restyled 2026-10-22 to sit in the same visual language as the Keybind List,
+-- reading its colours and fonts from the UI library at build time rather than
+-- hardcoding them, so a theme change carries over here too. Previously this
+-- was a fixed 400x50 slab with its own palette: background (18,22,28), a
+-- 2 px (147,51,234) stroke and 12 px corners, none of which appear anywhere
+-- else in the UI.
+--
+-- Deliberately still a COMPACT TOP-CENTRE BAR rather than a persistent list
+-- like the Keybind List. Two reasons: this lives in the middle of your screen
+-- where a growing list would sit on top of the fight, and the facing-player
+-- skill display hardcodes y = 78 on the assumption that this bar ends around
+-- y 70 (see the comment at its frame). So the bar stays one line and the
+-- per-user names stay a hover dropdown; what changed is how both look.
+--
+-- Shadow is built by hand because the library's own shadow helper is internal
+-- to it and is not on the returned table - same asset and slice, so it matches.
+---------------------------------------------------------------------
+_0xa299._0xCSBarH = 34
+
+-- The library's theme, or close-enough fallbacks if it ever changes shape.
+function _0xa299._0xCSTheme()
+    local L = _0xa299._0x8545
+    local T = (L and L.Theme) or {}
+    return {
+        bg      = T.Background or Color3.fromRGB(13, 13, 17),
+        panel   = T.Section    or Color3.fromRGB(19, 19, 25),
+        element = T.Element    or Color3.fromRGB(27, 27, 35),
+        text    = T.Text       or Color3.fromRGB(245, 245, 250),
+        dim     = T.TextDim    or Color3.fromRGB(125, 125, 140),
+        outline = T.Outline    or Color3.fromRGB(38, 38, 50),
+        ok      = T.Success    or Color3.fromRGB(76, 209, 139),
+        warn    = T.Warning    or Color3.fromRGB(255, 193, 59),
+        bad     = T.Error      or Color3.fromRGB(255, 85, 85),
+        accent  = (L and L.AccentColor) or Color3.fromRGB(96, 76, 255),
+        font    = (L and L.Font)     or Enum.Font.BuilderSansMedium,
+        bold    = (L and L.FontBold) or Enum.Font.GothamBold,
+        eye     = (L and L.Icons and L.Icons.eye) or "rbxassetid://10723346959",
+    }
+end
+
+-- Same asset, slice and offset the library's own drop shadow uses.
+function _0xa299._0xCSShadow(parent, transparency)
+    local s = Instance.new("ImageLabel")
+    s.Name = "Shadow"
+    s.BackgroundTransparency = 1
+    s.Position = UDim2.new(0, -15, 0, -15)
+    s.Size = UDim2.new(1, 30, 1, 30)
+    s.Image = "rbxassetid://6014261993"
+    s.ImageColor3 = Color3.new(0, 0, 0)
+    s.ImageTransparency = transparency or 0.3
+    s.SliceCenter = Rect.new(49, 49, 450, 450)
+    s.ScaleType = Enum.ScaleType.Slice
+    s.ZIndex = parent.ZIndex - 1
+    s.Parent = parent
+    return s
+end
+
+function _0xa299._0xCSTextWidth(text, size, font)
+    local ok, w = pcall(function()
+        return game:GetService("TextService")
+            :GetTextSize(text, size, font, Vector2.new(2000, 100)).X
+    end)
+    return (ok and w) or (#tostring(text) * 7)
+end
+
 _0xa299._0xf544 = function()
     if _0xa299._0xdede.uiCreated then return end
     _0xa299._0xdede.uiCreated = true
-    
+
+    local C = _0xa299._0xCSTheme()
+    local H = _0xa299._0xCSBarH
+
     _0xa299._0x761f = Instance.new("ScreenGui")
     _0xa299._0x761f.Name = _0xa299._0x5f86:GenerateGUID(false)
     _0xa299._0x761f.Parent = game:GetService("CoreGui")
@@ -20569,65 +20642,109 @@ _0xa299._0xf544 = function()
     _0xa299._0x761f.ResetOnSpawn = false
     _0xa299._0x761f.Enabled = true
 
-    -- Main display frame
+    -- THE BAR
     _0xa299._0xa885 = Instance.new("Frame")
-    _0xa299._0xa885.Size = UDim2.new(0, 400, 0, 50)
-    _0xa299._0xa885.Position = UDim2.new(0.5, -200, 0, 20)
-    _0xa299._0xa885.BackgroundColor3 = Color3.fromRGB(18, 22, 28)
+    _0xa299._0xa885.Size = UDim2.new(0, 260, 0, H)
+    _0xa299._0xa885.Position = UDim2.new(0.5, -130, 0, 20)
+    _0xa299._0xa885.BackgroundColor3 = C.bg
     _0xa299._0xa885.BorderSizePixel = 0
     _0xa299._0xa885.Visible = false
     _0xa299._0xa885.ZIndex = 100
     _0xa299._0xa885.Parent = _0xa299._0x761f
-    Instance.new("UICorner", _0xa299._0xa885).CornerRadius = UDim.new(0, 12)
+    Instance.new("UICorner", _0xa299._0xa885).CornerRadius = UDim.new(0, 4)
+    _0xa299._0xCSShadow(_0xa299._0xa885, 0.3)
 
     _0xa299._0x2945 = Instance.new("UIStroke")
-    _0xa299._0x2945.Color = Color3.fromRGB(147, 51, 234)
-    _0xa299._0x2945.Thickness = 2
+    _0xa299._0x2945.Color = C.outline
+    _0xa299._0x2945.Thickness = 1
     _0xa299._0x2945.Parent = _0xa299._0xa885
 
+    -- Accent underline, the same cue the Keybind List header carries.
+    _0xa299._0xCSAccent = Instance.new("Frame")
+    _0xa299._0xCSAccent.BackgroundColor3 = C.accent
+    _0xa299._0xCSAccent.BorderSizePixel = 0
+    _0xa299._0xCSAccent.Position = UDim2.new(0, 0, 1, -2)
+    _0xa299._0xCSAccent.Size = UDim2.new(1, 0, 0, 2)
+    _0xa299._0xCSAccent.ZIndex = 101
+    _0xa299._0xCSAccent.Parent = _0xa299._0xa885
+
+    -- Eye, in the accent colour.
+    _0xa299._0xCSIcon = Instance.new("ImageLabel")
+    _0xa299._0xCSIcon.BackgroundTransparency = 1
+    _0xa299._0xCSIcon.Image = C.eye
+    _0xa299._0xCSIcon.ImageColor3 = C.accent
+    _0xa299._0xCSIcon.Position = UDim2.new(0, 12, 0, math.floor((H - 2 - 16) / 2))
+    _0xa299._0xCSIcon.Size = UDim2.new(0, 16, 0, 16)
+    _0xa299._0xCSIcon.ZIndex = 101
+    _0xa299._0xCSIcon.Parent = _0xa299._0xa885
+
     _0xa299._0xc8d1 = Instance.new("TextLabel")
-    _0xa299._0xc8d1.Text = "Chakra Sense Users: 0"
-    _0xa299._0xc8d1.Font = Enum.Font.GothamBold
-    _0xa299._0xc8d1.TextSize = 16
-    _0xa299._0xc8d1.TextColor3 = Color3.fromRGB(255, 255, 255)
+    _0xa299._0xc8d1.Text = "Chakra Sense"
+    _0xa299._0xc8d1.Font = C.bold
+    _0xa299._0xc8d1.TextSize = 14
+    _0xa299._0xc8d1.TextColor3 = C.text
     _0xa299._0xc8d1.BackgroundTransparency = 1
-    _0xa299._0xc8d1.Position = UDim2.new(0, 10, 0, 0)
-    _0xa299._0xc8d1.Size = UDim2.new(0.5, -15, 1, 0)
+    _0xa299._0xc8d1.Position = UDim2.new(0, 34, 0, 0)
+    _0xa299._0xc8d1.Size = UDim2.new(0, 160, 0, H - 2)
     _0xa299._0xc8d1.TextXAlignment = Enum.TextXAlignment.Left
+    _0xa299._0xc8d1.ZIndex = 101
     _0xa299._0xc8d1.Parent = _0xa299._0xa885
 
-    -- Dropdown that shows on hover
+    -- State word, right side. Carries the only other colour on the bar, so it
+    -- is the thing your eye lands on.
+    _0xa299._0xc8cb = Instance.new("TextLabel")
+    _0xa299._0xc8cb.Text = "CLEAR"
+    _0xa299._0xc8cb.Font = C.bold
+    _0xa299._0xc8cb.TextSize = 12
+    _0xa299._0xc8cb.TextColor3 = C.ok
+    _0xa299._0xc8cb.BackgroundTransparency = 1
+    _0xa299._0xc8cb.Position = UDim2.new(1, -90, 0, 0)
+    _0xa299._0xc8cb.Size = UDim2.new(0, 78, 0, H - 2)
+    _0xa299._0xc8cb.TextXAlignment = Enum.TextXAlignment.Right
+    _0xa299._0xc8cb.Visible = true
+    _0xa299._0xc8cb.ZIndex = 101
+    _0xa299._0xc8cb.Parent = _0xa299._0xa885
+
+    -- THE HOVER DROPDOWN
     _0xa299._0x7904 = Instance.new("Frame")
-    _0xa299._0x7904.Size = UDim2.new(0, 200, 0, 0)
-    _0xa299._0x7904.Position = UDim2.new(0, 0, 1, 5)
-    _0xa299._0x7904.BackgroundColor3 = Color3.fromRGB(18, 22, 28)
+    _0xa299._0x7904.Size = UDim2.new(0, 220, 0, 0)
+    _0xa299._0x7904.Position = UDim2.new(0, 0, 1, 6)
+    _0xa299._0x7904.BackgroundColor3 = C.panel
     _0xa299._0x7904.BorderSizePixel = 0
     _0xa299._0x7904.Visible = false
-    _0xa299._0x7904.ZIndex = 101
-    _0xa299._0x7904.ClipsDescendants = true
+    _0xa299._0x7904.ZIndex = 102
+    -- NOT clipping. The old version grew this frame from height 0 and needed
+    -- the clip; it is now sized to exactly fit its rows, and long names
+    -- truncate instead of overflowing. Clipping would also swallow the drop
+    -- shadow below, since that is a child drawn outside the frame's bounds.
+    _0xa299._0x7904.ClipsDescendants = false
     _0xa299._0x7904.Parent = _0xa299._0xa885
-    Instance.new("UICorner", _0xa299._0x7904).CornerRadius = UDim.new(0, 8)
+    Instance.new("UICorner", _0xa299._0x7904).CornerRadius = UDim.new(0, 4)
+    -- No shadow on this one. It carries a UIPadding, which shifts every child's
+    -- origin, and a shadow is deliberately drawn OUTSIDE its parent's bounds -
+    -- so it would land off-centre. The dropdown already separates from the bar
+    -- by being Section against the bar's darker Background, plus its own
+    -- outline, and one shadow reads cleaner than two overlapping ones.
 
     _0xa299._0xd59c = Instance.new("UIStroke")
-    _0xa299._0xd59c.Color = Color3.fromRGB(147, 51, 234)
+    _0xa299._0xd59c.Color = C.outline
     _0xa299._0xd59c.Thickness = 1
     _0xa299._0xd59c.Parent = _0xa299._0x7904
 
     _0xa299._0x1912 = Instance.new("UIListLayout")
     _0xa299._0x1912.FillDirection = Enum.FillDirection.Vertical
     _0xa299._0x1912.HorizontalAlignment = Enum.HorizontalAlignment.Left
-    _0xa299._0x1912.Padding = UDim.new(0, 2)
+    _0xa299._0x1912.Padding = UDim.new(0, 3)
     _0xa299._0x1912.SortOrder = Enum.SortOrder.Name
     _0xa299._0x1912.Parent = _0xa299._0x7904
 
     _0xa299._0x528b = Instance.new("UIPadding")
-    _0xa299._0x528b.PaddingTop = UDim.new(0, 5)
-    _0xa299._0x528b.PaddingBottom = UDim.new(0, 5)
-    _0xa299._0x528b.PaddingLeft = UDim.new(0, 8)
-    _0xa299._0x528b.PaddingRight = UDim.new(0, 8)
+    _0xa299._0x528b.PaddingTop = UDim.new(0, 7)
+    _0xa299._0x528b.PaddingBottom = UDim.new(0, 7)
+    _0xa299._0x528b.PaddingLeft = UDim.new(0, 10)
+    _0xa299._0x528b.PaddingRight = UDim.new(0, 10)
     _0xa299._0x528b.Parent = _0xa299._0x7904
 
-    -- Hover detection for showing dropdown
     _0xa299._0xa885.MouseEnter:Connect(function()
         if _0xa299._0xa885.Visible then
             _0xa299._0x7904.Visible = true
@@ -20637,102 +20754,132 @@ _0xa299._0xf544 = function()
     _0xa299._0xa885.MouseLeave:Connect(function()
         _0xa299._0x7904.Visible = false
     end)
-
-    -- Spectator Status Label (on the right side)
-    _0xa299._0xc8cb = Instance.new("TextLabel")
-    _0xa299._0xc8cb.Text = "Spectators = None"
-    _0xa299._0xc8cb.Font = Enum.Font.GothamBold
-    _0xa299._0xc8cb.TextSize = 16
-    _0xa299._0xc8cb.TextColor3 = Color3.fromRGB(34, 197, 94)
-    _0xa299._0xc8cb.BackgroundTransparency = 1
-    _0xa299._0xc8cb.Position = UDim2.new(0.5, 5, 0, 0)
-    _0xa299._0xc8cb.Size = UDim2.new(0.5, -15, 1, 0)
-    _0xa299._0xc8cb.TextXAlignment = Enum.TextXAlignment.Right
-    _0xa299._0xc8cb.Visible = true
-    _0xa299._0xc8cb.Parent = _0xa299._0xa885
 end -- End of createChakraSenseUI function
+
+-- One dropdown row: eye, name, state word. Returns the name's pixel width so
+-- the dropdown can size itself to the longest one.
+function _0xa299._0xCSRow(playerName, stateText, stateColor, C)
+    local row = Instance.new("Frame")
+    row.Name = playerName
+    row.BackgroundTransparency = 1
+    row.Size = UDim2.new(1, 0, 0, 18)
+    row.ZIndex = 103
+    row.Parent = _0xa299._0x7904
+
+    local eye = Instance.new("ImageLabel")
+    eye.BackgroundTransparency = 1
+    eye.Image = C.eye
+    eye.ImageColor3 = stateColor
+    eye.Position = UDim2.new(0, 0, 0.5, -6)
+    eye.Size = UDim2.new(0, 12, 0, 12)
+    eye.ZIndex = 104
+    eye.Parent = row
+
+    local name = Instance.new("TextLabel")
+    name.Text = playerName
+    name.Font = C.font
+    name.TextSize = 13
+    name.TextColor3 = C.text
+    name.BackgroundTransparency = 1
+    name.Position = UDim2.new(0, 18, 0, 0)
+    name.Size = UDim2.new(1, -(18 + 68), 1, 0)
+    name.TextXAlignment = Enum.TextXAlignment.Left
+    name.TextTruncate = Enum.TextTruncate.AtEnd
+    name.ZIndex = 104
+    name.Parent = row
+
+    local state = Instance.new("TextLabel")
+    state.Text = stateText
+    state.Font = C.bold
+    state.TextSize = 11
+    state.TextColor3 = stateColor
+    state.BackgroundTransparency = 1
+    state.Position = UDim2.new(1, -66, 0, 0)
+    state.Size = UDim2.new(0, 66, 1, 0)
+    state.TextXAlignment = Enum.TextXAlignment.Right
+    state.ZIndex = 104
+    state.Parent = row
+
+    return _0xa299._0xCSTextWidth(playerName, 13, C.font)
+end
 
 function _0xa299._0xd6dd()
     if not _0xa299._0xdede.uiCreated then return end
-    local count = 0
-    for _ in pairs(_0xa299._0x21fb) do
-        count = count + 1
+
+    local C = _0xa299._0xCSTheme()
+    local H = _0xa299._0xCSBarH
+
+    -- Pick up a theme change without a rebuild.
+    if _0xa299._0xCSAccent then _0xa299._0xCSAccent.BackgroundColor3 = C.accent end
+    if _0xa299._0xCSIcon then _0xa299._0xCSIcon.ImageColor3 = C.accent end
+
+    -- Who is on the list, and in what state. Actively watching beats merely
+    -- having it equipped, which beats having it off cooldown and idle.
+    local rows = {}
+    for playerName in pairs(_0xa299._0x21fb) do
+        if _0xa299._0x7eaf[playerName] then
+            rows[playerName] = { "WATCHING", C.bad }
+        elseif _0xa299._0xHoveringUsers[playerName] then
+            rows[playerName] = { "EQUIPPED", C.warn }
+        else
+            rows[playerName] = { "IDLE", C.ok }
+        end
     end
-    
-    _0xa299._0xc8d1.Text = "Chakra Sense Users: " .. count
+    -- Hovering users who never showed up in the cooldown sweep still count.
+    for playerName in pairs(_0xa299._0xHoveringUsers) do
+        if not rows[playerName] then
+            rows[playerName] = { "EQUIPPED", C.warn }
+        end
+    end
+
+    local count = 0
+    for _ in pairs(rows) do count = count + 1 end
+
+    _0xa299._0xc8d1.Text = (count == 1) and "Chakra Sense  1 user"
+                                        or ("Chakra Sense  " .. count .. " users")
     _0xa299._0xa885.Visible = _0xa299._0xdede.enabled and count > 0
-    
-    -- Clear existing name labels
+
+    -- Bar state: anyone watching -> WATCHED, anyone equipped -> NEARBY,
+    -- otherwise the sensers present are idle.
+    local anyWatching = next(_0xa299._0x7eaf) ~= nil
+    local anyHovering = next(_0xa299._0xHoveringUsers) ~= nil
+    if anyWatching then
+        _0xa299._0xc8cb.Text = "WATCHED"
+        _0xa299._0xc8cb.TextColor3 = C.bad
+    elseif anyHovering then
+        _0xa299._0xc8cb.Text = "NEARBY"
+        _0xa299._0xc8cb.TextColor3 = C.warn
+    else
+        _0xa299._0xc8cb.Text = "CLEAR"
+        _0xa299._0xc8cb.TextColor3 = C.ok
+    end
+
+    -- Size the bar to its contents and keep it centred, instead of a fixed
+    -- 400 px slab with the text floating in the middle of it.
+    local titleW = _0xa299._0xCSTextWidth(_0xa299._0xc8d1.Text, 14, C.bold)
+    local stateW = _0xa299._0xCSTextWidth(_0xa299._0xc8cb.Text, 12, C.bold)
+    local barW = 12 + 16 + 6 + titleW + 18 + stateW + 12
+    barW = math.max(220, math.floor(barW + 0.5))
+    _0xa299._0xa885.Size = UDim2.new(0, barW, 0, H)
+    _0xa299._0xa885.Position = UDim2.new(0.5, -math.floor(barW / 2), 0, 20)
+    _0xa299._0xc8d1.Size = UDim2.new(0, titleW + 4, 0, H - 2)
+    _0xa299._0xc8cb.Position = UDim2.new(1, -(stateW + 12), 0, 0)
+    _0xa299._0xc8cb.Size = UDim2.new(0, stateW, 0, H - 2)
+
+    -- Rebuild the dropdown rows.
     for _, child in ipairs(_0xa299._0x7904:GetChildren()) do
-        if child:IsA("TextLabel") then
+        if child:IsA("Frame") or child:IsA("TextLabel") then
             child:Destroy()
         end
     end
-    
-    -- Add name labels for each user
-    for playerName in pairs(_0xa299._0x21fb) do
-        local nameLabel = Instance.new("TextLabel")
-        nameLabel.Name = playerName
-        nameLabel.Text = playerName
-        nameLabel.Font = Enum.Font.GothamMedium
-        nameLabel.TextSize = 14
-        -- Red if they're spectating you, orange if hovering (Extreme Caution), green otherwise
-        if _0xa299._0x7eaf[playerName] then
-            nameLabel.TextColor3 = Color3.fromRGB(239, 68, 68) -- Red for active spectators
-        elseif _0xa299._0xHoveringUsers[playerName] then
-            nameLabel.TextColor3 = Color3.fromRGB(255, 165, 0) -- Orange for hovering (Extreme Caution)
-        else
-            nameLabel.TextColor3 = Color3.fromRGB(34, 197, 94) -- Green for non-spectators
-        end
-        nameLabel.BackgroundTransparency = 1
-        nameLabel.Size = UDim2.new(1, 0, 0, 20)
-        nameLabel.TextXAlignment = Enum.TextXAlignment.Left
-        nameLabel.ZIndex = 102
-        nameLabel.Parent = _0xa299._0x7904
+
+    local widest = 0
+    for playerName, info in pairs(rows) do
+        widest = math.max(widest, _0xa299._0xCSRow(playerName, info[1], info[2], C))
     end
-    
-    -- Also add hovering users who aren't in the chakra sense users list
-    for playerName in pairs(_0xa299._0xHoveringUsers) do
-        if not _0xa299._0x21fb[playerName] then
-            local nameLabel = Instance.new("TextLabel")
-            nameLabel.Name = playerName
-            nameLabel.Text = playerName
-            nameLabel.Font = Enum.Font.GothamMedium
-            nameLabel.TextSize = 14
-            nameLabel.TextColor3 = Color3.fromRGB(255, 165, 0) -- Orange for hovering
-            nameLabel.BackgroundTransparency = 1
-            nameLabel.Size = UDim2.new(1, 0, 0, 20)
-            nameLabel.TextXAlignment = Enum.TextXAlignment.Left
-            nameLabel.ZIndex = 102
-            nameLabel.Parent = _0xa299._0x7904
-            count = count + 1
-        end
-    end
-    
-    -- Update dropdown height based on content
-    local totalHeight = count * 22 + 10
-    _0xa299._0x7904.Size = UDim2.new(0, 200, 0, totalHeight)
-    
-    -- Check if anyone is hovering (Extreme Caution)
-    local anyHovering = false
-    for _ in pairs(_0xa299._0xHoveringUsers) do
-        anyHovering = true
-        break
-    end
-    
-    -- Update spectator display
-    if next(_0xa299._0x7eaf) then
-        -- Someone is actively observing with chakra sense
-        _0xa299._0xc8cb.Text = "Spectators = Active"
-        _0xa299._0xc8cb.TextColor3 = Color3.fromRGB(239, 68, 68) -- Red
-    elseif anyHovering then
-        -- Only hovering (has chakra sense equipped but not actively using)
-        _0xa299._0xc8cb.Text = "Spectators = Equipped"
-        _0xa299._0xc8cb.TextColor3 = Color3.fromRGB(255, 165, 0) -- Orange/Yellow
-    else
-        _0xa299._0xc8cb.Text = "Spectators = None"
-        _0xa299._0xc8cb.TextColor3 = Color3.fromRGB(34, 197, 94)
-    end
+
+    local dropW = math.max(220, math.min(360, 10 + 18 + widest + 10 + 66 + 10))
+    _0xa299._0x7904.Size = UDim2.new(0, dropW, 0, count * 18 + (count - 1) * 3 + 14)
 end
 
 _0xa299._0x2008 = nil
