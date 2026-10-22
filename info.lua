@@ -2470,6 +2470,9 @@ end
 --     waited for.
 ---------------------------------------------------------------------
 
+-- Seconds to settle after loading in, before the caller proceeds.
+_0xa299._0xLoadInSettle = 2
+
 -- Get past the new loading screen. True if we are through it.
 function _0xa299._0xDismissLoadingScreen(timeout)
     timeout = timeout or 12
@@ -2539,7 +2542,21 @@ function _0xa299._0xLoadIntoGame(timeout)
     end
 
     if not fn then return false end
-    return (pcall(fn))
+    local called = pcall(fn)
+
+    -- Settle before the caller does anything. Loading in is not instant on
+    -- the client's side either - the character spawns, the HUD comes up and
+    -- the camera hands back - and a farm that starts teleporting or firing
+    -- remotes into that is the other half of the glitching.
+    --
+    -- Done here rather than at the call sites: 9 of the 14 had no wait at
+    -- all, four had their own task.wait(2) and one a task.wait(1), so it was
+    -- inconsistent and easy to forget. Those are now removed, since leaving
+    -- them would double the wait.
+    if called then
+        task.wait(_0xa299._0xLoadInSettle)
+    end
+    return called
 end
 
 _0xa299._0xSTPFar = 250   -- studs: beyond this, pre-stream the destination
@@ -8265,7 +8282,6 @@ function _0xa299._0xDestroyStart()
             -- Gets past the v1551 loading screen first, then waits for the
             -- function to exist. See _0xa299._0xLoadIntoGame.
             _0xa299._0xLoadIntoGame()
-            task.wait(2)
     end
 
     -- Drop a stale saved target (e.g. the player we picked in a PREVIOUS server, which
@@ -24702,7 +24718,6 @@ function _0xa299._0xc0db()
             _0xa299._0xLoadIntoGame()
             
             -- Wait for character to be ready
-            task.wait(1)
             if not _0xa299._0x396d.Character then
                 _0xa299._0x396d.CharacterAdded:Wait()
             end
@@ -27292,7 +27307,6 @@ function _0xa299._0xStartAutoProg()
             -- Gets past the v1551 loading screen first, then waits for the
             -- function to exist. See _0xa299._0xLoadIntoGame.
             _0xa299._0xLoadIntoGame()
-            task.wait(2)
         end
     end
     
@@ -28797,7 +28811,6 @@ function _0xa299._0xAFKM()
                 -- function to exist. See _0xa299._0xLoadIntoGame.
                 _0xa299._0xLoadIntoGame()
                 
-                task.wait(2)
             end
         end
         
@@ -30806,7 +30819,6 @@ function _0xa299._0xa94c()
             -- Gets past the v1551 loading screen first, then waits for the
             -- function to exist. See _0xa299._0xLoadIntoGame.
             _0xa299._0xLoadIntoGame()
-            task.wait(2)
         end
     end
     
