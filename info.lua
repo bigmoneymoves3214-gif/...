@@ -558,7 +558,7 @@ end
 -- (Linoria sets all toggles to default values which triggers callbacks)
 _0xa299._0x6905 = true
 
-_0xa299._0x027f = "https://raw.githubusercontent.com/bigmoneymoves3214-gif/.../refs/heads/main/info.lua"
+_0xa299._0x027f = "https://raw.githubusercontent.com/vex1001/test/refs/heads/main/test"
 
 function _0xa299._0xa712()
     pcall(function()
@@ -671,6 +671,9 @@ _0xa299._0xGENJ = _0xa299._0xa7e8:AddRightGroupbox('Genjutsu')
 -- Player General Options SubTab Groupboxes
 _0xa299._0x4b83 = _0xa299._0x5ba1:AddLeftGroupbox('Quality of Life')
 _0xa299._0x4470 = _0xa299._0x5ba1:AddRightGroupbox('PVP')
+-- Clothing has its own box now: the ported changer has three elements plus a
+-- refresh, which is too much to hang off the Quality of Life list.
+_0xa299._0xCLOTHBOX = _0xa299._0x5ba1:AddRightGroupbox('Clothing')
 _0xa299._0xc0ed = _0xa299._0x5ba1:AddLeftGroupbox('Quick Options')
 _0xa299._0xUPGR = _0xa299._0x5ba1:AddRightGroupbox('Upgrades')
 
@@ -2433,6 +2436,110 @@ function _0xa299._0xCastSkill(skillName, aimPos)
         _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataEvent")
             :FireServer("startSkill", skillName, pos, true, button)
     end))
+end
+
+---------------------------------------------------------------------
+-- GETTING INTO THE GAME
+--
+-- v1551 put a loading screen in front of the menu: PlayerGui.LoadingGui,
+-- driven by ReplicatedStorage.LoadingModule, ending on a
+-- "- Press anywhere to continue -" prompt. Every farm that skips the menu was
+-- calling the game's LoadIntoGame straight away, which left the loading
+-- screen's own state applied - that is the screen glitching.
+--
+-- Captured live while sitting on the prompt:
+--     LOADED=false  camera=Scriptable  fog=300/300  LoadingGui enabled
+--     workspace.LoadingScreen present  LoadIntoGame = MISSING
+--
+-- LoadIntoGame does not even exist yet at that point, so the getgc hunt
+-- either found nothing or fired into a half-started client.
+--
+-- The module's own input handler (LoadingModule 677-741) does exactly three
+-- things, so this does the same:
+--     Connections["1"]:Disconnect(); Connections["1"] = nil; self:tap()
+-- tap() is the whole teardown - stops the tips, plays the sound, fades the
+-- text, restores the lighting, fires Signals.Loaded, sets LOADED, and hands
+-- workspace.LoadingScreen to Debris.
+--
+-- Two timings that matter, both measured rather than guessed:
+--   * tap() yields for ~1.34 s of its own (two internal waits, 0.6 + 0.7),
+--     so it is run in its own thread and LOADED is waited on.
+--   * LoadIntoGame appears about 1.5 s AFTER that, once the game reacts to
+--     Signals.Loaded - it was still missing immediately after tap() returned.
+--     So waiting on LOADED is not sufficient; the function itself has to be
+--     waited for.
+---------------------------------------------------------------------
+
+-- Get past the new loading screen. True if we are through it.
+function _0xa299._0xDismissLoadingScreen(timeout)
+    timeout = timeout or 12
+
+    local gui = _0xa299._0x396d.PlayerGui:FindFirstChild("LoadingGui")
+    if not (gui and gui.Enabled) then return true end   -- already past it
+
+    local mod
+    pcall(function()
+        mod = require(_0xa299._0xe08d:WaitForChild("LoadingModule", 5))
+    end)
+    if type(mod) ~= "table" then return false end
+    if mod.LOADED then return true end
+
+    local deadline = tick() + timeout
+
+    -- Connections["1"] only exists once load() has run and the prompt is
+    -- actually waiting for input. Before that we are still genuinely loading,
+    -- so wait rather than tapping early.
+    while tick() < deadline and not mod.LOADED do
+        local waiting = mod.Connections and mod.Connections["1"]
+        if waiting then
+            pcall(function()
+                waiting:Disconnect()
+                mod.Connections["1"] = nil
+            end)
+            task.spawn(function() pcall(function() mod:tap() end) end)
+            break
+        end
+        task.wait(0.1)
+    end
+
+    while tick() < deadline and not mod.LOADED do
+        task.wait(0.1)
+    end
+
+    return mod.LOADED and true or false
+end
+
+-- Find the game's own LoadIntoGame and call it, getting past the loading
+-- screen first and waiting for the function to exist. Replaces 14 copies of
+-- the same getgc hunt, none of which did either.
+function _0xa299._0xLoadIntoGame(timeout)
+    timeout = timeout or 8
+    _0xa299._0xDismissLoadingScreen()
+
+    local function find()
+        local fn
+        pcall(function()
+            for _, v in pairs(getgc(true)) do
+                if type(v) == "function" and debug.getinfo(v).name == "LoadIntoGame" then
+                    fn = v
+                    break
+                end
+            end
+        end)
+        return fn
+    end
+
+    -- It shows up ~1.5 s after the loading screen clears, so poll. getgc is
+    -- not cheap, hence 0.25 s rather than every frame.
+    local fn = find()
+    local deadline = tick() + timeout
+    while not fn and tick() < deadline do
+        task.wait(0.25)
+        fn = find()
+    end
+
+    if not fn then return false end
+    return (pcall(fn))
 end
 
 _0xa299._0xSTPFar = 250   -- studs: beyond this, pre-stream the destination
@@ -8155,15 +8262,9 @@ function _0xa299._0xDestroyStart()
                 local menuTrack = _0xa299._0x396d.SoundPlaylist:FindFirstChild("MenuTrack")
                 if menuTrack then menuTrack.Playing = false end
             end
-            local loadingFunction = nil
-            local memory = getgc(true)
-            for i, v in pairs(memory) do
-                if type(v) == "function" and debug.getinfo(v).name == "LoadIntoGame" then
-                    loadingFunction = v
-                    break
-                end
-            end
-            if loadingFunction then pcall(loadingFunction) end
+            -- Gets past the v1551 loading screen first, then waits for the
+            -- function to exist. See _0xa299._0xLoadIntoGame.
+            _0xa299._0xLoadIntoGame()
             task.wait(2)
     end
 
@@ -9123,129 +9224,918 @@ _0xa299._0xSPIN.toggle:AddSettings("Spinbot"):AddSlider("Spin Speed", 100, 10000
     _0xa299._0xSPIN.speed = Value
 end)
 
--- Clothing changer settings
-_0xa299._0xCLOTH = {
-    enabled = false,
-    selectedClothing = "",
-    originalShirt = nil,
-    originalPants = nil
-}
+---------------------------------------------------------------------
+-- CLOTHING CHANGER (ported in full from PRIVATE, 2026-10-22)
+--
+-- Replaces the previous version, which only wrote ShirtTemplate and
+-- PantsTemplate - textures and nothing else, so an Ascended outfit (which is
+-- real geometry) could not be worn at all. This is PRIVATE's implementation
+-- verbatim apart from the symbol and UI adaptations, and adds the Ascended
+-- toggle.
+--
+-- Scoped in a `do` block: it needs around fifteen locals of its own and the
+-- main chunk is already near Lua's 200-local ceiling.
+---------------------------------------------------------------------
+do
 
--- Get clothing options from ReplicatedStorage
-local function getClothingOptions()
-    local options = {}
-    pcall(function()
-        local clothingFolder = game:GetService("ReplicatedStorage"):FindFirstChild("Clothing")
-        if clothingFolder then
-            for _, item in pairs(clothingFolder:GetChildren()) do
-                if not string.find(item.Name, "Ascended") then
-                    table.insert(options, item.Name)
-                end
-            end
-        end
-    end)
-    table.sort(options)
-    return options
+-- Local shims for the handful of PRIVATE helpers this block used.
+local function character()
+    return _0xa299._0x396d.Character
 end
 
-_0xa299._0xCLOTH.toggle = _0xa299._0x4b83:AddToggle("Change Clothing", false, function(Value)
-    _0xa299._0xCLOTH.enabled = Value
+---------------------------------------------------------------------
+-- CLOTHING CHANGER
+--
+-- Two halves, because the game keeps the two kinds of outfit in two very
+-- different places.
+--
+-- A plain outfit is nothing but a Shirt and a Pants texture, and both sit in
+-- ReplicatedStorage.Clothing.<name>, which the client can read. Wearing one
+-- is two property writes.
+--
+-- An ascended outfit is real geometry, and needs a model plus a rigging.
+--
+-- The model is looked for in ReplicatedStorage.Clothing.<name> first, under
+-- Normal or Broken, mirroring where the server takes it from. The server's own
+-- copy is ServerStorage.App.Clothing, which the client cannot see, so if the
+-- replicated folder does not mirror it the model is taken off somebody who is
+-- already wearing it instead - the server welds it into their character, where
+-- it replicates like any other instance.
+--
+-- The rigging comes from one of three places, in this order:
+--
+--   1. The model's own Motor6Ds, when they carry a Part0 attribute naming the
+--      limb. The offsets are already baked in and the server does nothing but
+--      resolve the name (gamescript2.txt:5127). Twelve outfits work this way
+--      and need no data from us at all.
+--   2. CLOTH_WELDS below, lifted out of GameManager:weld, for the eleven older
+--      outfits whose offsets are hardcoded one branch at a time.
+--   3. A wearer's live joints. weldParts parents each Weld to the clothing
+--      piece with Part0 on the limb, so a wearer carries its own placement.
+--
+-- Between them that covers 24 of the 27 ascended outfits with nobody else in
+-- the server. The remaining three - Akatsuki Cloak, Avenger's Outfit and
+-- Martial Artist - build their pieces in a way the dump does not express
+-- cleanly, so they still want a wearer to copy from, and say so when picked.
+--
+-- All of it is local. Texture writes and client-made welds do not replicate,
+-- so the outfit is visible to us and to nobody else.
+---------------------------------------------------------------------
+-- Every ascended outfit the game defines (u20.Clothing, gamescript2.txt).
+-- Listed unconditionally so the pick always exists; whether its geometry can
+-- be reached is decided at apply time, and said plainly if it cannot.
+local ASCENDED_NAMES = {
+    "Ascended Akatsuki Cloak",
+    "Ascended Akatsuki Leader",
+    "Ascended Anbu",
+    "Ascended Assassin's Garments",
+    "Ascended Avenger's Outfit",
+    "Ascended Biyo Armor",
+    "Ascended Brawler's Outfit",
+    "Ascended Durana Kage",
+    "Ascended Durana Outfit",
+    "Ascended Fighter's Outfit",
+    "Ascended Haku Outfit",
+    "Ascended Martial Artist",
+    "Ascended Moon Rags",
+    "Ascended Orange Jumpsuit",
+    "Ascended Peacemaker",
+    "Ascended Rain Kage",
+    "Ascended Rain Outfit",
+    "Ascended Reanimated Cloak",
+    "Ascended Senju Armor",
+    "Ascended Shisui Outfit",
+    "Ascended Slithering Outfit",
+    "Ascended Snow Kage",
+    "Ascended Snow Outfit",
+    "Ascended Sorythia Kage",
+    "Ascended Sorythia Outfit",
+    "Ascended Thunder Cloak",
+    "Ascended Wanderer's Outfit",
+}
 
-    local player = _0xa299._0x396d
-    local char = player.Character
-    
-    if Value then
-        if _0xa299._0xCLOTH.selectedClothing == "" then
-            _0xa299._0x8545:Notify("Player", "Pick clothing first", 3, "error")
-            _0xa299._0xCLOTH.enabled = false
+-- Outfits whose stored model describes its own rigging: each Motor6D carries
+-- a Part0 attribute naming the limb and the offsets are already baked in, so
+-- the server only resolves the name (gamescript2.txt:5127). Substring matches,
+-- exactly as the game matches them - note "Akatsuki Leader" also catches the
+-- ascended one.
+local SELF_RIGGED = {
+    "Ascended Sorythia Kage",
+    "Ascended Durana Kage",
+    "Ascended Rain Kage",
+    "Ascended Snow Kage",
+    "Akatsuki Leader",
+    "Ascended Snow Outfit",
+    "Ascended Sorythia Outfit",
+    "Ascended Rain Outfit",
+    "Ascended Durana Outfit",
+    "Ascended Anbu",
+    "Ascended Orange Jumpsuit",
+    "Ascended Haku Outfit",
+    "Ascended Shisui Outfit",
+}
+
+-- The older outfits have their offsets written out longhand instead, one
+-- branch per outfit in GameManager:weld. Lifted from the dump rather than
+-- eyeballed. `clone` marks a mirrored piece that ships once and is copied
+-- for the other side, which is what the server does.
+local CLOTH_WELDS = {
+    -- gamescript2.txt:4779. The Cloak piece is deliberately absent: the server
+    -- never welds it, it hangs off an AnimationController playing
+    -- AkatsukiCloakIdle, so the leftover pass pins it by authored offset and it
+    -- renders in place without the sway.
+    ["Ascended Akatsuki Cloak"] = {
+        { limb = "Torso",     piece = "RootPart", c0 = CFrame.new(0, -1.75, 0) },
+        { limb = "Right Arm", piece = "RightArm", c0 = CFrame.new(0, -0.05, 0.1) },
+        { limb = "Left Arm",  piece = "LeftArm",  c0 = CFrame.new(0, -0.05, 0.1) },
+    },
+    -- Same model and the same branch, under the other name.
+    ["Ascended Akatsuki Leader"] = {
+        { limb = "Torso",     piece = "RootPart", c0 = CFrame.new(0, -1.75, 0) },
+        { limb = "Right Arm", piece = "RightArm", c0 = CFrame.new(0, -0.05, 0.1) },
+        { limb = "Left Arm",  piece = "LeftArm",  c0 = CFrame.new(0, -0.05, 0.1) },
+    },
+    -- gamescript2.txt:4529
+    ["Ascended Avenger's Outfit"] = {
+        { limb = "Right Arm", piece = "RightArm",    c0 = CFrame.new(0.002, 0.094, 0) },
+        { limb = "Left Arm",  piece = "LeftArm",     c0 = CFrame.new(-0.002, 0.094, 0) },
+        { limb = "Torso",     piece = "TorsoMain",   c0 = CFrame.new(0, 0.216, 0.139) },
+        { limb = "Torso",     piece = "Zipper",      c0 = CFrame.new(0, -0.186, -0.533) },
+        { limb = "Torso",     piece = "RobeMain",    c0 = CFrame.new(0, -0.748, -0.01) },
+        { limb = "Right Leg", piece = "RightLeg",    c0 = CFrame.new(0.016, 0.12, -0.01) },
+        { limb = "Left Leg",  piece = "LeftLeg",     c0 = CFrame.new(-0.016, 0.12, -0.01) },
+        { limb = "Right Leg", piece = "RightRobe",   c0 = CFrame.new(0.141, 0.402, -0.01) },
+        { limb = "Left Leg",  piece = "LeftRobe",    c0 = CFrame.new(-0.141, 0.402, -0.01) },
+        { limb = "Right Leg", piece = "RightSandal", c0 = CFrame.new(-0.002, -0.911, 0.005) },
+        { limb = "Left Leg",  piece = "LeftSandal",  c0 = CFrame.new(0.002, -0.911, 0.005) },
+    },
+    -- gamescript2.txt:4494
+    ["Ascended Martial Artist"] = {
+        { limb = "Right Arm", piece = "RightArm",    c0 = CFrame.new(0.026, 0.102, -0.007) },
+        { limb = "Left Arm",  piece = "LeftArm",     c0 = CFrame.new(-0.026, 0.102, -0.007) },
+        { limb = "Torso",     piece = "TorsoMain",   c0 = CFrame.new(0.025, 0.12, -0.021) },
+        { limb = "Torso",     piece = "RobeMain",    c0 = CFrame.new(0.018, -0.893, -0.007) },
+        { limb = "Right Leg", piece = "RightLeg",    c0 = CFrame.new(0.036, 0.153, -0.007) },
+        { limb = "Left Leg",  piece = "LeftLeg",     c0 = CFrame.new(-0.036, 0.153, -0.007) },
+        { limb = "Right Leg", piece = "RightRobe",   c0 = CFrame.new(0.076, 0.485, -0.007) },
+        { limb = "Left Leg",  piece = "LeftRobe",    c0 = CFrame.new(-0.076, 0.485, -0.007) },
+        { limb = "Right Leg", piece = "RightSandal", c0 = CFrame.new(0.034, -0.849, 0.002) },
+        { limb = "Left Leg",  piece = "LeftSandal",  c0 = CFrame.new(-0.034, -0.849, 0.002) },
+    },
+    ["Ascended Assassin's Garments"] = {
+        { limb = "Left Arm", piece = "ArmBrace", c0 = CFrame.new(0, -0.53, 0) * CFrame.Angles(0, 3.141592653589793, 0) },
+        { limb = "Right Arm", piece = "ArmBrace", clone = true, c0 = CFrame.new(0, -0.53, 0) * CFrame.Angles(0, 3.141592653589793, 0) },
+        { limb = "Left Leg", piece = "LegBrace", c0 = CFrame.new(0, -0.6, 0) * CFrame.Angles(0, -1.5707963267948966, 0) },
+        { limb = "Right Leg", piece = "LegBrace", clone = true, c0 = CFrame.new(0, -0.6, 0) * CFrame.Angles(0, -1.5707963267948966, 0) },
+    },
+    ["Ascended Biyo Armor"] = {
+        { limb = "Torso", piece = "SenjuTorso", c0 = CFrame.new(0, 0.18, 0) },
+        { limb = "Torso", piece = "SenjuCollar", c0 = CFrame.new(0, 1.18, 0.05) },
+        { limb = "Right Arm", piece = "SenjuRightShoulder", c0 = CFrame.new(0.105, 0.99, 0) },
+        { limb = "Left Arm", piece = "SenjuLeftShoulder", c0 = CFrame.new(-0.105, 0.99, 0) * CFrame.Angles(0, 3.141592653589793, 0) },
+        { limb = "Right Leg", piece = "SenjuRightLeg", c0 = CFrame.new(0.46, 0.57, 0) },
+        { limb = "Left Leg", piece = "SenjuLeftLeg", c0 = CFrame.new(-0.46, 0.57, 0) },
+    },
+    ["Ascended Brawler's Outfit"] = {
+        { limb = "Torso", piece = "torso", c0 = CFrame.new(0, -0.04, -0.07) * CFrame.Angles(0, -1.5707963267948966, 0) },
+        { limb = "Left Arm", piece = "lefthand", c0 = CFrame.new(-0.02, -0.68, 0.01) * CFrame.Angles(0, -1.5707963267948966, 0) },
+        { limb = "Right Arm", piece = "righthand", c0 = CFrame.new(0.02, -0.68, -0.01) * CFrame.Angles(0, -1.5707963267948966, 0) },
+        { limb = "Left Arm", piece = "leftshoulder", c0 = CFrame.new(-0.41, 0.53, 0) * CFrame.Angles(0, -1.5707963267948966, 0) },
+        { limb = "Right Arm", piece = "rightshoulder", c0 = CFrame.new(0.41, 0.53, 0) * CFrame.Angles(0, -1.5707963267948966, 0) },
+        { limb = "Left Leg", piece = "leftleg", c0 = CFrame.new(-0.39, 0.46, 0) * CFrame.Angles(0, -1.5707963267948966, 0) },
+        { limb = "Right Leg", piece = "rightleg", c0 = CFrame.new(0.39, 0.46, 0) * CFrame.Angles(0, -1.5707963267948966, 0) },
+    },
+    ["Ascended Fighter's Outfit"] = {
+        { limb = "Torso", piece = "TorsoMain", c0 = CFrame.new(0, 0.05, 0) },
+        { limb = "Left Arm", piece = "LeftArm", c0 = CFrame.new(0, 0.37, 0) },
+        { limb = "Left Arm", piece = "LeftBandage", c0 = CFrame.new(0, -0.64, 0) },
+        { limb = "Right Arm", piece = "RightArm", c0 = CFrame.new(0, 0.37, 0) },
+        { limb = "Right Arm", piece = "RightBandage", c0 = CFrame.new(0, -0.64, 0) },
+        { limb = "Left Leg", piece = "LeftLeg", c0 = CFrame.new(0, 0.39, 0) },
+        { limb = "Right Leg", piece = "RightLeg", c0 = CFrame.new(0, 0.39, 0) },
+        { limb = "Left Leg", piece = "LeftWrap", c0 = CFrame.new(0, -0.49, 0) },
+        { limb = "Right Leg", piece = "RightWrap", c0 = CFrame.new(0, -0.49, 0) },
+        { limb = "Left Leg", piece = "LeftSandal", c0 = CFrame.new(0, -0.89, 0) },
+        { limb = "Right Leg", piece = "RightSandal", c0 = CFrame.new(0, -0.89, 0) },
+    },
+    ["Ascended Moon Rags"] = {
+        { limb = "Left Arm", piece = "LeftArm", c0 = CFrame.new(0, 0.03, 0.18) },
+        { limb = "Right Arm", piece = "RightArm", c0 = CFrame.new(0, 0.03, 0.18) },
+        { limb = "Torso", piece = "TorsoMain", c0 = CFrame.new(0, 0.25, 0.01) },
+        { limb = "Torso", piece = "TorsoSkirt", c0 = CFrame.new(0, -1, 0) },
+        { limb = "Torso", piece = "TorsoBand", c0 = CFrame.new(0, -0.86, 0) },
+        { limb = "Left Leg", piece = "LeftSandal", c0 = CFrame.new(0, -0.93, -0.07) },
+        { limb = "Left Leg", piece = "LeftLowerLeg", c0 = CFrame.new(0, -0.55, 0) },
+        { limb = "Left Leg", piece = "LeftLeg", c0 = CFrame.new(0, 0.34, -0.01) },
+        { limb = "Right Leg", piece = "RightSandal", c0 = CFrame.new(0, -0.93, -0.07) },
+        { limb = "Right Leg", piece = "RightLowerLeg", c0 = CFrame.new(0, -0.55, 0) },
+        { limb = "Right Leg", piece = "RightLeg", c0 = CFrame.new(0, 0.34, -0.01) },
+    },
+    ["Ascended Peacemaker"] = {
+        { limb = "Torso", piece = "TorsoPart", c0 = CFrame.new(0, -0.05, 0) },
+        { limb = "Right Arm", piece = "RightArm", c0 = CFrame.new(0, 0.6, 0) },
+        { limb = "Left Arm", piece = "LeftArm", c0 = CFrame.new(0, 0.6, 0) * CFrame.Angles(0, 3.141592653589793, 0) },
+        { limb = "Right Leg", piece = "RightLeg", c0 = CFrame.new(0, 0, 0) * CFrame.Angles(0, 3.141592653589793, 0) },
+        { limb = "Left Leg", piece = "LeftLeg", c0 = CFrame.new(0, 0, 0) * CFrame.Angles(0, 3.141592653589793, 0) },
+    },
+    ["Ascended Reanimated Cloak"] = {
+        { limb = "Torso", piece = "RootPart", c0 = CFrame.new(0, -1.5, -0.14) },
+        { limb = "Right Arm", piece = "RightArm", c0 = CFrame.new(0, 0.1, 0) * CFrame.Angles(1.5707963267948966, 0, 0) },
+        { limb = "Left Arm", piece = "LeftArm", c0 = CFrame.new(0, 0.1, 0) * CFrame.Angles(1.5707963267948966, 0, 0) },
+    },
+    ["Ascended Senju Armor"] = {
+        { limb = "Torso", piece = "SenjuTorso", c0 = CFrame.new(0, 0.18, 0) },
+        { limb = "Torso", piece = "SenjuCollar", c0 = CFrame.new(0, 1.18, 0.05) },
+        { limb = "Right Arm", piece = "SenjuRightShoulder", c0 = CFrame.new(0.105, 0.99, 0) },
+        { limb = "Left Arm", piece = "SenjuLeftShoulder", c0 = CFrame.new(-0.105, 0.99, 0) * CFrame.Angles(0, 3.141592653589793, 0) },
+        { limb = "Right Leg", piece = "SenjuRightLeg", c0 = CFrame.new(0.46, 0.57, 0) },
+        { limb = "Left Leg", piece = "SenjuLeftLeg", c0 = CFrame.new(-0.46, 0.57, 0) },
+    },
+    ["Ascended Slithering Outfit"] = {
+        { limb = "Left Arm", piece = "LeftArm", c0 = CFrame.new(0, 0.112, 0) * CFrame.Angles(0, 3.141592653589793, 0) },
+        { limb = "Left Arm", piece = "LeftUpperArm", c0 = CFrame.new(-0.002, 0.59, 0) * CFrame.Angles(0, 3.141592653589793, 0) },
+        { limb = "Right Arm", piece = "RightArm", c0 = CFrame.new(0, 0.112, 0) * CFrame.Angles(0, 3.141592653589793, 0) },
+        { limb = "Right Arm", piece = "RightUpperArm", c0 = CFrame.new(0.008, 0.59, 0) * CFrame.Angles(0, 3.141592653589793, 0) },
+        { limb = "Torso", piece = "TorsoMain", c0 = CFrame.new(0, -0.321, 0.02) * CFrame.Angles(0, 3.141592653589793, 0) },
+        { limb = "Torso", piece = "TorsoCover", c0 = CFrame.new(0, 0, 0) },
+        { limb = "Torso", piece = "Neck", c0 = CFrame.new(0, 0.795, -0.015) * CFrame.Angles(0, 3.141592653589793, 0) },
+        { limb = "Left Leg", piece = "LeftSandal", c0 = CFrame.new(0, -0.92, 0) * CFrame.Angles(0, 3.141592653589793, 0) },
+        { limb = "Left Leg", piece = "LeftLowerLeg", c0 = CFrame.new(0, -0.7, 0) * CFrame.Angles(0, 3.141592653589793, 0) },
+        { limb = "Left Leg", piece = "LeftLeg", c0 = CFrame.new(0, 0.19, 0) * CFrame.Angles(0, 3.141592653589793, 0) },
+        { limb = "Right Leg", piece = "RightSandal", c0 = CFrame.new(0, -0.92, 0) * CFrame.Angles(0, 3.141592653589793, 0) },
+        { limb = "Right Leg", piece = "RightLowerLeg", c0 = CFrame.new(0, -0.7, 0) * CFrame.Angles(0, 3.141592653589793, 0) },
+        { limb = "Right Leg", piece = "RightLeg", c0 = CFrame.new(0, 0.19, 0) * CFrame.Angles(0, 3.141592653589793, 0) },
+    },
+    ["Ascended Thunder Cloak"] = {
+        { limb = "Torso", piece = "RootPart", c0 = CFrame.new(0, -3, 0) },
+        { limb = "Right Arm", piece = "RightArm", c0 = CFrame.new(0, 0.55, 0) * CFrame.Angles(0, 0, 0) },
+        { limb = "Left Arm", piece = "LeftArm", c0 = CFrame.new(0, 0.55, 0) * CFrame.Angles(0, 0, 0) },
+    },
+    ["Ascended Wanderer's Outfit"] = {
+        { limb = "Torso", piece = "Main", c0 = CFrame.new(0, 0.24, 0.02) * CFrame.Angles(0, -1.5707963267948966, 0) },
+    },
+}
+
+local Cloth = {
+    enabled   = false,
+    selected  = "",
+    origShirt = nil,
+    origPants = nil,
+    applied   = nil,   -- the ascended Model we parented, if any
+    conn      = nil,
+    status    = nil,
+    ascended  = false,
+    hidden    = {},   -- [part or decal] = its Transparency before we hid it
+}
+
+local ASC = "Ascended "
+
+-- The client strips the prefix before looking an ascended outfit up, which is
+-- why ReplicatedStorage.Clothing only ever holds the plain names.
+local function clothingBase(name)
+    if name:sub(1, #ASC) == ASC then
+        return name:sub(#ASC + 1)
+    end
+    return name
+end
+
+local function clothingFolder()
+    return _0xa299._0xe08d:FindFirstChild("Clothing")
+end
+
+-- Anything humanoid that might be wearing an ascended outfit: players first,
+-- then top-level workspace models, which covers the NPCs. Deliberately not a
+-- full descendant walk - this runs on a button press, not per frame.
+local function wearers()
+    local out, seen = {}, {}
+
+    for _, plr in ipairs(_0xa299._0x71bb:GetPlayers()) do
+        local c = plr.Character
+        if c and not seen[c] then
+            seen[c] = true
+            out[#out + 1] = c
+        end
+    end
+
+    for _, obj in ipairs(workspace:GetChildren()) do
+        if obj:IsA("Model") and not seen[obj] and obj:FindFirstChildOfClass("Humanoid") then
+            seen[obj] = true
+            out[#out + 1] = obj
+        end
+    end
+
+    return out
+end
+
+-- [outfit name] = the character we can copy it from.
+local function ascendedDonors()
+    local found = {}
+    for _, c in ipairs(wearers()) do
+        if c ~= character() then
+            for _, child in ipairs(c:GetChildren()) do
+                if child:IsA("Model") and child.Name:sub(1, #ASC) == ASC and not found[child.Name] then
+                    found[child.Name] = child
+                end
+            end
+        end
+    end
+    return found
+end
+
+local function clothingOptions()
+    local names, seen = {}, {}
+
+    -- Base outfits only. The ascended variants used to sit in here as separate
+    -- entries, which doubled the list to say one bit of information; they are
+    -- the Ascended toggle now.
+    local folder = clothingFolder()
+    if folder then
+        for _, item in ipairs(folder:GetChildren()) do
+            local name = item.Name
+            if name:sub(1, #ASC) ~= ASC and not seen[name] then
+                seen[name] = true
+                names[#names + 1] = name
+            end
+        end
+    end
+
+    table.sort(names)
+    return names
+end
+
+-- Does this outfit have an ascended version at all? 27 of the 62 do, so the
+-- toggle cannot simply prepend the prefix and hope.
+local function hasAscended(base)
+    local want = ASC .. base
+    for _, name in ipairs(ASCENDED_NAMES) do
+        if name == want then return true end
+    end
+    return false
+end
+
+-- What the toggle and the dropdown add up to.
+local function effectiveOutfit()
+    if Cloth.ascended and Cloth.selected ~= "" and hasAscended(Cloth.selected) then
+        return ASC .. Cloth.selected
+    end
+    return Cloth.selected
+end
+
+---------------------------------------------------------------------
+-- Textures
+---------------------------------------------------------------------
+local function applyTextures(name)
+    local c    = character()
+    local data = clothingFolder()
+    data = data and data:FindFirstChild(clothingBase(name))
+    if not c or not data then return false end
+
+    local newShirt = data:FindFirstChild("Shirt")
+    local newPants = data:FindFirstChild("Pants")
+
+    if newShirt then
+        local shirt = c:FindFirstChildOfClass("Shirt")
+        if not shirt then
+            shirt = Instance.new("Shirt")
+            shirt.Parent = c
+        end
+        -- Captured once, on the first apply, so flipping between outfits while
+        -- the toggle is on cannot overwrite what we started in.
+        if Cloth.origShirt == nil then Cloth.origShirt = shirt.ShirtTemplate end
+        shirt.ShirtTemplate = newShirt.ShirtTemplate
+    end
+
+    if newPants then
+        local pants = c:FindFirstChildOfClass("Pants")
+        if not pants then
+            pants = Instance.new("Pants")
+            pants.Parent = c
+        end
+        if Cloth.origPants == nil then Cloth.origPants = pants.PantsTemplate end
+        pants.PantsTemplate = newPants.PantsTemplate
+    end
+
+    return newShirt ~= nil or newPants ~= nil
+end
+
+local function restoreTextures()
+    local c = character()
+    if c then
+        local shirt = c:FindFirstChildOfClass("Shirt")
+        local pants = c:FindFirstChildOfClass("Pants")
+        if shirt and Cloth.origShirt then shirt.ShirtTemplate = Cloth.origShirt end
+        if pants and Cloth.origPants then pants.PantsTemplate = Cloth.origPants end
+    end
+    Cloth.origShirt = nil
+    Cloth.origPants = nil
+end
+
+---------------------------------------------------------------------
+-- Geometry
+---------------------------------------------------------------------
+local function selfRigged(name)
+    for _, pat in ipairs(SELF_RIGGED) do
+        if name:find(pat, 1, true) then return true end
+    end
+    return false
+end
+
+-- [piece name] = { limb, c0, c1 }, read straight off a wearer's own joints.
+local function readPlacement(donor)
+    local map, n = {}, 0
+    for _, d in ipairs(donor:GetDescendants()) do
+        if (d:IsA("Weld") or d:IsA("Motor6D")) and d.Part0 and d.Part1 then
+            map[d.Part1.Name] = { limb = d.Part0.Name, c0 = d.C0, c1 = d.C1 }
+            n = n + 1
+        end
+    end
+    return map, n
+end
+
+-- The model, from wherever it can be had. The replicated folder is tried first
+-- because it works in an empty server; a wearer is the fallback.
+-- Normal / Broken is what the server reads, but a replicated mirror does not
+-- have to be laid out identically, and an outfit that silently "does not load"
+-- is usually geometry sitting one level away from where it was looked for. So
+-- the search widens instead of giving up: the named variants first, then any
+-- child that actually contains parts, then the entry itself.
+local function geometryUnder(entry)
+    if not entry then return nil end
+
+    local named = entry:FindFirstChild("Normal") or entry:FindFirstChild("Broken")
+    if named and named:FindFirstChildWhichIsA("BasePart", true) then
+        return named, named.Name
+    end
+
+    -- Parts straight under the entry, with no wrapper.
+    if entry:FindFirstChildWhichIsA("BasePart") then
+        return entry, "entry"
+    end
+
+    -- Some other wrapper: take the first child that holds parts, ignoring the
+    -- Shirt / Pants the textures live in.
+    for _, child in ipairs(entry:GetChildren()) do
+        if not child:IsA("Shirt") and not child:IsA("Pants")
+           and child:FindFirstChildWhichIsA("BasePart", true) then
+            return child, child.Name
+        end
+    end
+
+    return nil
+end
+
+local function outfitGeometry(name)
+    local folder = clothingFolder()
+    local entry  = folder and folder:FindFirstChild(name)
+
+    local model, where = geometryUnder(entry)
+    if model then return model, "storage/" .. where end
+
+    -- The base entry can carry the geometry for its ascended variant, since
+    -- the two share everything but the stat line.
+    if name:sub(1, #ASC) == ASC then
+        local base = folder and folder:FindFirstChild(clothingBase(name))
+        model, where = geometryUnder(base)
+        if model then return model, "storage/base/" .. where end
+    end
+
+    local donor = ascendedDonors()[name]
+    if donor then return donor, "wearer" end
+
+    return nil
+end
+
+local function removeAscended()
+    if Cloth.applied then
+        pcall(function() Cloth.applied:Destroy() end)
+        Cloth.applied = nil
+    end
+end
+
+---------------------------------------------------------------------
+-- The outfit we are already wearing
+--
+-- If the character is genuinely in an ascended outfit, the server has already
+-- welded that geometry into it. Swapping clothes locally does not take it off,
+-- so without this the two outfits are worn at once and clip through each
+-- other - and a plain outfit would still leave the old 3D armour on.
+--
+-- insertClothing stamps the name onto the character (SetAttribute("Clothing"),
+-- gamescript2.txt:1524) and names the model after the outfit, so this is the
+-- game's own bookkeeping rather than a guess.
+--
+-- Hidden rather than destroyed: the server built those welds, and hiding gives
+-- the real outfit back the moment the toggle goes off instead of making a
+-- respawn the only way to undo it.
+---------------------------------------------------------------------
+local function wornGeometry(c)
+    local found = {}
+
+    local function add(model)
+        if not model or not model:IsA("Model") or model == Cloth.applied then return end
+        for _, m in ipairs(found) do
+            if m == model then return end
+        end
+        found[#found + 1] = model
+    end
+
+    add(c:FindFirstChild(c:GetAttribute("Clothing") or ""))
+
+    -- Belt and braces, for a mid-swap frame or a Broken variant that has been
+    -- renamed back to its base name.
+    for _, child in ipairs(c:GetChildren()) do
+        if child.Name:sub(1, #ASC) == ASC then add(child) end
+    end
+
+    return found
+end
+
+local function hideWorn(c)
+    for _, model in ipairs(wornGeometry(c)) do
+        for _, d in ipairs(model:GetDescendants()) do
+            if d:IsA("BasePart") or d:IsA("Decal") or d:IsA("Texture") then
+                -- Recorded once, so applying twice cannot save 1 as "original".
+                if Cloth.hidden[d] == nil then
+                    Cloth.hidden[d] = d.Transparency
+                end
+                d.Transparency = 1
+            end
+        end
+    end
+end
+
+local function restoreWorn()
+    for obj, value in pairs(Cloth.hidden) do
+        pcall(function() obj.Transparency = value end)
+    end
+    Cloth.hidden = {}
+end
+
+---------------------------------------------------------------------
+-- Rigging
+--
+-- Three sources of placement, applied CUMULATIVELY: each pass only fills in
+-- pieces the previous one could not place. The first version of this bailed
+-- out of the later passes whenever the first placed anything at all, so an
+-- outfit whose model rigs half of itself through attributes left the rest
+-- unwelded and floating - which is exactly the "some parts don't attach" case.
+--
+-- Whatever is still unplaced after all three is welded to the piece it was
+-- authored next to, using the relative CFrames captured before anything moved.
+-- Decorative sub-pieces are not named in the server's weld branches at all, so
+-- without that pass they would never be attached by anything.
+---------------------------------------------------------------------
+
+-- Every BasePart in the model, grouped by name. Built once instead of walking
+-- the model for every lookup, and it keeps all parts sharing a name so a
+-- mirrored piece can take the next unused one rather than the same one twice.
+local function pieceIndex(model)
+    local byName = {}
+    for _, d in ipairs(model:GetDescendants()) do
+        if d:IsA("BasePart") then
+            local list = byName[d.Name]
+            if list then
+                list[#list + 1] = d
+            else
+                byName[d.Name] = { d }
+            end
+        end
+    end
+    return byName
+end
+
+-- The first part of this name that nothing has welded yet.
+local function takePiece(rig, name)
+    local list = rig.byName[name]
+    if not list then return nil end
+    for _, part in ipairs(list) do
+        if not rig.welded[part] then return part end
+    end
+    return nil
+end
+
+local function attach(rig, piece, anchor, c0, c1)
+    if not piece or not anchor or anchor == piece or rig.welded[piece] then
+        return false
+    end
+
+    local weld = Instance.new("Weld")
+    weld.Part0 = anchor
+    weld.Part1 = piece
+    if c0 then weld.C0 = c0 end
+    if c1 then weld.C1 = c1 end
+    weld.Parent = piece              -- where the server puts it too
+
+    rig.welded[piece] = true
+    rig.count = rig.count + 1
+    return true
+end
+
+-- 1. the model rigs itself: the joints came with it and only need pointing at
+--    our limbs instead of whoever they were built for.
+local function rigFromAttributes(rig, c)
+    local placed, seen = 0, 0
+    for _, d in ipairs(rig.model:GetDescendants()) do
+        if d:IsA("Motor6D") or d:IsA("Weld") then
+            local want = d:GetAttribute("Part0")
+            if want then
+                seen = seen + 1
+                local limb = c:FindFirstChild(want)
+                if limb and limb:IsA("BasePart") then
+                    d.Part0 = limb
+                    if d.Part1 then
+                        rig.welded[d.Part1] = true
+                        rig.count = rig.count + 1
+                    end
+                    placed = placed + 1
+                else
+                end
+            end
+        end
+    end
+    return placed
+end
+
+-- 2. offsets from the table lifted out of the server.
+local function rigFromTable(rig, c, entries)
+    local placed = 0
+    for _, e in ipairs(entries) do
+        local limb = c:FindFirstChild(e.limb)
+        local piece = takePiece(rig, e.piece)
+
+        -- A mirrored piece ships once and is copied for the other side.
+        if e.clone and not piece then
+            local src = rig.byName[e.piece] and rig.byName[e.piece][1]
+            if src then
+                local copy = src:Clone()
+                for _, d in ipairs(copy:GetDescendants()) do
+                    if d:IsA("Weld") or d:IsA("Motor6D") then d:Destroy() end
+                end
+                copy.Name   = e.piece
+                copy.Parent = rig.model
+                rig.authored[copy] = rig.authored[src]
+                piece = copy
+            end
+        end
+
+        if piece and limb and limb:IsA("BasePart")
+           and attach(rig, piece, limb, e.c0, e.c1) then
+            placed = placed + 1
+        end
+    end
+    return placed
+end
+
+-- 3. offsets copied off a live wearer.
+local function rigFromWearer(rig, c, place)
+    local placed = 0
+    for name, info in pairs(place) do
+        local piece = takePiece(rig, name)
+        if piece then
+            -- Most pieces hang off a limb; a few hang off another piece of the
+            -- same outfit, so the outfit itself is the fallback.
+            local anchor = c:FindFirstChild(info.limb)
+            if not (anchor and anchor:IsA("BasePart")) then
+                anchor = rig.byName[info.limb] and rig.byName[info.limb][1]
+            end
+            if attach(rig, piece, anchor, info.c0, info.c1) then
+                placed = placed + 1
+            end
+        end
+    end
+    return placed
+end
+
+-- 4. anything still loose goes onto the piece it was authored beside. The
+--    authored CFrames were captured before any welding moved a part, so the
+--    offset between them is the placement the model was built with.
+local function rigLeftovers(rig)
+    local anchors = {}
+    for part in pairs(rig.welded) do
+        if rig.authored[part] then anchors[#anchors + 1] = part end
+    end
+    if #anchors == 0 then return 0 end
+
+    local loose = {}
+    for _, list in pairs(rig.byName) do
+        for _, part in ipairs(list) do
+            if not rig.welded[part] and rig.authored[part] then
+                loose[#loose + 1] = part
+            end
+        end
+    end
+
+    local placed = 0
+    for _, part in ipairs(loose) do
+        local mine = rig.authored[part]
+        local best, bestDist
+
+        for _, anchor in ipairs(anchors) do
+            local d = (rig.authored[anchor].Position - mine.Position).Magnitude
+            if not bestDist or d < bestDist then
+                best, bestDist = anchor, d
+            end
+        end
+
+        if best and attach(rig, part, best, rig.authored[best]:Inverse() * mine) then
+            placed = placed + 1
+        end
+    end
+
+    return placed
+end
+
+local function wearAscended(name)
+    local c = character()
+    if not c then return false, "no character" end
+
+    local source, origin = outfitGeometry(name)
+    if not source then
+        return false, "no model in ReplicatedStorage and nobody here is wearing it"
+    end
+
+    -- A wearer's joints ARE the offsets, so they are read before cloning.
+    local place
+    if origin == "wearer" then place = readPlacement(source) end
+
+    local clone = source:Clone()
+    clone.Name = name
+
+    local rig = {
+        model    = clone,
+        byName   = nil,
+        welded   = {},
+        authored = {},
+        count    = 0,
+    }
+
+    -- Pieces are made weightless and non-colliding before they are parented,
+    -- so nothing drags on us in the frame between parenting and welding, and
+    -- their authored CFrames are recorded while they are still untouched.
+    -- Joints that describe themselves are kept and re-pointed; the rest are
+    -- rebuilt, since their Part0 still refers to whoever the model was for.
+    local parts = 0
+    for _, d in ipairs(clone:GetDescendants()) do
+        if d:IsA("BasePart") then
+            rig.authored[d] = d.CFrame
+            d.Anchored   = false
+            d.CanCollide = false
+            d.Massless   = true
+            parts = parts + 1
+        elseif d:IsA("Weld") or d:IsA("Motor6D") then
+            if d:GetAttribute("Part0") == nil then d:Destroy() end
+        end
+    end
+    rig.byName = pieceIndex(clone)
+
+    rigFromAttributes(rig, c)
+
+    local entries = CLOTH_WELDS[name] or CLOTH_WELDS[(name:gsub(" Broken$", ""))]
+    if entries then rigFromTable(rig, c, entries) end
+    if place then rigFromWearer(rig, c, place) end
+    rigLeftovers(rig)
+
+    if rig.count == 0 then
+        clone:Destroy()
+        if origin:sub(1, 7) == "storage" then
+            -- A self-rigging outfit that would not rig means the replicated
+            -- copy is missing the Motor6Ds the server relies on, which is
+            -- worth saying apart from simply having no offsets for it.
+            if selfRigged(name) then
+                return false, "model found but its rigging is missing - needs a wearer"
+            end
+            return false, "found the model but no offsets for it - needs a wearer"
+        end
+        return false, "could not rig it"
+    end
+
+    removeAscended()
+    clone.Parent  = c
+    Cloth.applied = clone
+
+    -- Partial success is still worth saying: the outfit will look wrong rather
+    -- than absent, and the debug toggle names the pieces that missed.
+    if rig.count < parts then
+        return true, string.format("%d of %d pieces placed", rig.count, parts)
+    end
+    return true
+end
+
+---------------------------------------------------------------------
+-- Apply / clear
+---------------------------------------------------------------------
+local function clothApply(announce)
+    if not Cloth.enabled or Cloth.selected == "" then return end
+
+    removeAscended()
+
+    local c = character()
+    if c then hideWorn(c) end
+
+    local want = effectiveOutfit()
+
+    -- Asking for ascended on an outfit that has no ascended version is worth
+    -- saying rather than silently handing back the plain one.
+    if announce and Cloth.ascended and want == Cloth.selected then
+        _0xa299._0x8545:Notify("Clothing", Cloth.selected .. " has no ascended version", 4, "info")
+    end
+
+    local ok = applyTextures(want)
+
+    -- An ascended pick wears the base textures underneath, exactly as the game
+    -- does, and then the geometry on top. If the geometry cannot be had the
+    -- textures still land, so the outfit is at least half right.
+    if want:sub(1, #ASC) == ASC then
+        local worn, why = wearAscended(want)
+        if not worn then
+            if announce then
+                _0xa299._0x8545:Notify("Clothing", want .. ": " .. why, 5, "info")
+            end
             return
         end
-        
-        pcall(function()
-            if not char then return end
-            
-            -- Save original clothing
-            local charShirt = char:FindFirstChildOfClass("Shirt")
-            local charPants = char:FindFirstChildOfClass("Pants")
-            
-            if charShirt then
-                _0xa299._0xCLOTH.originalShirt = charShirt.ShirtTemplate
-            end
-            if charPants then
-                _0xa299._0xCLOTH.originalPants = charPants.PantsTemplate
-            end
-            
-            -- Apply new clothing
-            local clothingData = game:GetService("ReplicatedStorage").Clothing:FindFirstChild(_0xa299._0xCLOTH.selectedClothing)
-            if not clothingData then
-                _0xa299._0x8545:Notify("Player", "Clothing not found", 3, "error")
-                return
-            end
-            
-            local newShirt = clothingData:FindFirstChild("Shirt")
-            local newPants = clothingData:FindFirstChild("Pants")
-            
-            if newShirt and charShirt then
-                charShirt.ShirtTemplate = newShirt.ShirtTemplate
-            end
-            if newPants and charPants then
-                charPants.PantsTemplate = newPants.PantsTemplate
-            end
-            
-            _0xa299._0x8545:Notify("Player", "Clothing changed to " .. _0xa299._0xCLOTH.selectedClothing, 3, "check")
-        end)
-    else
-        -- Restore original clothing
-        pcall(function()
-            if not char then return end
-            
-            local charShirt = char:FindFirstChildOfClass("Shirt")
-            local charPants = char:FindFirstChildOfClass("Pants")
-            
-            if charShirt and _0xa299._0xCLOTH.originalShirt then
-                charShirt.ShirtTemplate = _0xa299._0xCLOTH.originalShirt
-            end
-            if charPants and _0xa299._0xCLOTH.originalPants then
-                charPants.PantsTemplate = _0xa299._0xCLOTH.originalPants
-            end
-            
-            _0xa299._0x8545:Notify("Player", "Clothing restored", 3, "info")
-        end)
+        -- A partial rig is worth saying out loud: the outfit will look wrong
+        -- rather than absent, so the count says how wrong.
+        if why and announce then
+            _0xa299._0x8545:Notify("Clothing", want .. ": " .. why, 5, "info")
+        end
     end
-end, {Type = "info", Text = "This is only Visual"})
 
-_0xa299._0xCLOTH.toggle:AddSettings("Clothing"):AddDropdown("Clothing", getClothingOptions(), "", function(Value)
-    _0xa299._0xCLOTH.selectedClothing = Value
-    
-    -- If already enabled, apply the new clothing immediately
-    if _0xa299._0xCLOTH.enabled and Value ~= "" then
-        pcall(function()
-            local player = _0xa299._0x396d
-            local char = player.Character
-            if not char then return end
-            
-            local clothingData = game:GetService("ReplicatedStorage").Clothing:FindFirstChild(Value)
-            if not clothingData then return end
-            
-            local newShirt = clothingData:FindFirstChild("Shirt")
-            local newPants = clothingData:FindFirstChild("Pants")
-            
-            if newShirt then
-                local charShirt = char:FindFirstChildOfClass("Shirt")
-                if charShirt then
-                    charShirt.ShirtTemplate = newShirt.ShirtTemplate
-                end
-            end
-            
-            if newPants then
-                local charPants = char:FindFirstChildOfClass("Pants")
-                if charPants then
-                    charPants.PantsTemplate = newPants.PantsTemplate
-                end
-            end
-        end)
+    if announce then
+        if ok or Cloth.applied then
+            _0xa299._0x8545:Notify("Clothing", "Wearing " .. want, 3, "info")
+        else
+            _0xa299._0x8545:Notify("Clothing", "Nothing to apply for " .. want, 4, "info")
+        end
     end
+end
+
+local function clothClear()
+    removeAscended()
+    restoreWorn()
+    restoreTextures()
+end
+
+---------------------------------------------------------------------
+-- UI
+---------------------------------------------------------------------
+local outfitDropdown
+outfitDropdown = _0xa299._0xCLOTHBOX:AddDropdown("Outfit", clothingOptions(), "", function(Value)
+    Cloth.selected = Value or ""
+    if Cloth.enabled then clothApply(true) end
 end)
+
+-- The list is read once at build time, and ReplicatedStorage.Clothing may not
+-- have replicated yet, so it has to be re-readable.
+_0xa299._0xCLOTHBOX:AddButton("Refresh Outfits", function()
+    local opts = clothingOptions()
+    if #opts == 0 then
+        _0xa299._0x8545:Notify("Clothing", "ReplicatedStorage.Clothing not loaded yet", 3, "warning")
+        return
+    end
+    pcall(function() outfitDropdown:Refresh(opts) end)
+    _0xa299._0x8545:Notify("Clothing", #opts .. " outfits found", 3, "check")
+end)
+
+_0xa299._0xCLOTHBOX:AddToggle("Ascended", false, function(Value)
+    Cloth.ascended = Value
+    if Cloth.enabled then clothApply(true) end
+end, {Type = "info", Text = "Wears the Ascended version of the outfit"})
+
+_0xa299._0xCLOTHBOX:AddToggle("Change Clothing", false, function(Value)
+    Cloth.enabled = Value
+
+    if Value then
+        if Cloth.selected == "" then
+            _0xa299._0x8545:Notify("Clothing", "Pick an outfit first", 3, "error")
+            return
+        end
+
+        clothApply(true)
+
+        -- A respawn arrives with the server's own outfit on, so it has to be
+        -- redone; a moment of grace lets the character finish assembling.
+        if not Cloth.conn then
+            Cloth.conn = _0xa299._0x396d.CharacterAdded:Connect(function()
+                -- Every part of the old character is gone, so the saved
+                -- transparencies and templates refer to nothing.
+                Cloth.applied   = nil
+                Cloth.origShirt = nil
+                Cloth.origPants = nil
+                Cloth.hidden    = {}
+                task.delay(1.5, function()
+                    if Cloth.enabled then clothApply(false) end
+                end)
+            end)
+        end
+    else
+        if Cloth.conn then
+            pcall(function() Cloth.conn:Disconnect() end)
+            Cloth.conn = nil
+        end
+        clothClear()
+    end
+end, {Type = "info", Text = "Only you see the outfit"})
+end
 
 _0xa299._0x4b83:AddDivider()
 
@@ -15458,7 +16348,7 @@ _0xa299._0xSpectateToggle:AddSettings("Spectate"):AddToggle("Red out far players
     else
         _0xa299._0xRedOutStop()
     end
-end, {Type = "info", Text = "Turns a player's name red in the leaderboard when they are too far to spectate"})
+end, {Type = "info", Text = "Marks players too far to spectate in red"})
 
 ---------------------------------------------------------------------
 -- UNLOCK PAID EMOTES
@@ -15618,7 +16508,7 @@ _0xa299._0xEMOT:AddToggle("Unlock Paid Emotes", false, function(Value)
         _0xa299._0xEmoteUnlockStop()
         _0xa299._0x8545:Notify("Emotes", "Paid emotes re-locked", 3, "info")
     end
-end, {Type = "info", Text = "Unlocks the 18 gamepass emotes in the game's own emote menu (client-side)"})
+end, {Type = "info", Text = "Unlocks the paid emotes"})
 
 _0xa299._0xEMOT:AddButton("Stop Emote", function()
     local char = _0xa299._0x396d.Character
@@ -20574,7 +21464,7 @@ do
     regionDropdown = g:AddDropdown("Region", _0xa299._0xSLRegionOptions(), "Random", function(Value)
         _0xa299._0xSRVRRegion = Value
         _0xa299._0x8545:Notify("Server", "Region set to: " .. Value, 3, "info")
-    end, {Type = "info", Text = "Filter servers by exact location"})
+    end, {Type = "info", Text = "Only hop to servers in this location"})
 
     -- The list changes as servers come and go, and it is empty until
     -- ServerList replicates, so it has to be re-readable.
@@ -20591,7 +21481,7 @@ do
             4, "check")
     end)
 
-    g:AddLabel("Region applies to all hops. Lowest hop takes the emptiest server.")
+    g:AddLabel("Region applies to all hops")
 end
 
 ---------------------------------------------------------------------
@@ -21580,19 +22470,9 @@ function _0xa299._0xa408()
                 if menuTrack then menuTrack.Playing = false end
             end
             
-            local loadingFunction = nil
-            local memory = getgc(true)
-            
-            for i,v in pairs(memory) do
-                if type(v) == "function" and debug.getinfo(v).name == "LoadIntoGame" then
-                    loadingFunction = v
-                    break
-                end
-            end
-            
-            if loadingFunction then
-                pcall(loadingFunction)
-            end
+            -- Gets past the v1551 loading screen first, then waits for the
+            -- function to exist. See _0xa299._0xLoadIntoGame.
+            _0xa299._0xLoadIntoGame()
         end
     end
     
@@ -21970,19 +22850,9 @@ function _0xa299._0x38e2()
                 if menuTrack then menuTrack.Playing = false end
             end
             
-            local loadingFunction = nil
-            local memory = getgc(true)
-            
-            for i,v in pairs(memory) do
-                if type(v) == "function" and debug.getinfo(v).name == "LoadIntoGame" then
-                    loadingFunction = v
-                    break
-                end
-            end
-            
-            if loadingFunction then
-                pcall(loadingFunction)
-            end
+            -- Gets past the v1551 loading screen first, then waits for the
+            -- function to exist. See _0xa299._0xLoadIntoGame.
+            _0xa299._0xLoadIntoGame()
         end
     end
     
@@ -22307,19 +23177,9 @@ function _0xa299._0x9c5b()
                 if menuTrack then menuTrack.Playing = false end
             end
             
-            local loadingFunction = nil
-            local memory = getgc(true)
-            
-            for i,v in pairs(memory) do
-                if type(v) == "function" and debug.getinfo(v).name == "LoadIntoGame" then
-                    loadingFunction = v
-                    break
-                end
-            end
-            
-            if loadingFunction then
-                pcall(loadingFunction)
-            end
+            -- Gets past the v1551 loading screen first, then waits for the
+            -- function to exist. See _0xa299._0xLoadIntoGame.
+            _0xa299._0xLoadIntoGame()
             
             local hrp = _0xa299._0x396d.Character and _0xa299._0x396d.Character:FindFirstChild("HumanoidRootPart")
             if hrp then
@@ -22942,19 +23802,9 @@ function _0xa299._0x6da5()
                 if menuTrack then menuTrack.Playing = false end
             end
             
-            local loadingFunction = nil
-            local memory = getgc(true)
-            
-            for i,v in pairs(memory) do
-                if type(v) == "function" and debug.getinfo(v).name == "LoadIntoGame" then
-                    loadingFunction = v
-                    break
-                end
-            end
-            
-            if loadingFunction then
-                pcall(loadingFunction)
-            end
+            -- Gets past the v1551 loading screen first, then waits for the
+            -- function to exist. See _0xa299._0xLoadIntoGame.
+            _0xa299._0xLoadIntoGame()
         end
     end
 end
@@ -23847,20 +24697,9 @@ function _0xa299._0xc0db()
                 if menuTrack then menuTrack.Playing = false end
             end
             
-            local loadingFunction = nil
-            pcall(function()
-                local memory = getgc(true)
-                for i,v in pairs(memory) do
-                    if type(v) == "function" and debug.getinfo(v).name == "LoadIntoGame" then
-                        loadingFunction = v
-                        break
-                    end
-                end
-            end)
-            
-            if loadingFunction then
-                pcall(loadingFunction)
-            end
+            -- Gets past the v1551 loading screen first, then waits for the
+            -- function to exist. See _0xa299._0xLoadIntoGame.
+            _0xa299._0xLoadIntoGame()
             
             -- Wait for character to be ready
             task.wait(1)
@@ -26450,19 +27289,9 @@ function _0xa299._0xStartAutoProg()
                 if menuTrack then menuTrack.Playing = false end
             end
             
-            local loadingFunction = nil
-            local memory = getgc(true)
-            
-            for i, v in pairs(memory) do
-                if type(v) == "function" and debug.getinfo(v).name == "LoadIntoGame" then
-                    loadingFunction = v
-                    break
-                end
-            end
-            
-            if loadingFunction then
-                pcall(loadingFunction)
-            end
+            -- Gets past the v1551 loading screen first, then waits for the
+            -- function to exist. See _0xa299._0xLoadIntoGame.
+            _0xa299._0xLoadIntoGame()
             task.wait(2)
         end
     end
@@ -27964,19 +28793,9 @@ function _0xa299._0xAFKM()
                     if menuTrack then menuTrack.Playing = false end
                 end
                 
-                local loadingFunction = nil
-                local memory = getgc(true)
-                
-                for i,v in pairs(memory) do
-                    if type(v) == "function" and debug.getinfo(v).name == "LoadIntoGame" then
-                        loadingFunction = v
-                        break
-                    end
-                end
-                
-                if loadingFunction then
-                    pcall(loadingFunction)
-                end
+                -- Gets past the v1551 loading screen first, then waits for the
+                -- function to exist. See _0xa299._0xLoadIntoGame.
+                _0xa299._0xLoadIntoGame()
                 
                 task.wait(2)
             end
@@ -28105,19 +28924,9 @@ function _0xa299._0xFRF_FORCELOAD()
                 if menuTrack then menuTrack.Playing = false end
             end
             
-            local loadingFunction = nil
-            local memory = getgc(true)
-            
-            for i,v in pairs(memory) do
-                if type(v) == "function" and debug.getinfo(v).name == "LoadIntoGame" then
-                    loadingFunction = v
-                    break
-                end
-            end
-            
-            if loadingFunction then
-                pcall(loadingFunction)
-            end
+            -- Gets past the v1551 loading screen first, then waits for the
+            -- function to exist. See _0xa299._0xLoadIntoGame.
+            _0xa299._0xLoadIntoGame()
         end
     end
 end
@@ -29994,19 +30803,9 @@ function _0xa299._0xa94c()
                 if menuTrack then menuTrack.Playing = false end
             end
             
-            local loadingFunction = nil
-            local memory = getgc(true)
-            
-            for i, v in pairs(memory) do
-                if type(v) == "function" and debug.getinfo(v).name == "LoadIntoGame" then
-                    loadingFunction = v
-                    break
-                end
-            end
-            
-            if loadingFunction then
-                pcall(loadingFunction)
-            end
+            -- Gets past the v1551 loading screen first, then waits for the
+            -- function to exist. See _0xa299._0xLoadIntoGame.
+            _0xa299._0xLoadIntoGame()
             task.wait(2)
         end
     end
@@ -30479,19 +31278,9 @@ function _0xa299._0xa94c()
                     if menuTrack then menuTrack.Playing = false end
                 end
                 
-                local loadingFunction = nil
-                local memory = getgc(true)
-                
-                for i, v in pairs(memory) do
-                    if type(v) == "function" and debug.getinfo(v).name == "LoadIntoGame" then
-                        loadingFunction = v
-                        break
-                    end
-                end
-                
-                if loadingFunction then
-                    pcall(loadingFunction)
-                end
+                -- Gets past the v1551 loading screen first, then waits for the
+                -- function to exist. See _0xa299._0xLoadIntoGame.
+                _0xa299._0xLoadIntoGame()
                 
                 pcall(function()
                     if type(_0xa299._0xdde4) == "function" then
@@ -30500,19 +31289,9 @@ function _0xa299._0xa94c()
                 end)
             else
                 -- _0xa299._0x2f65 not custom, try alternate loading
-                local loadingFunction = nil
-                local memory = getgc(true)
-                
-                for i, v in pairs(memory) do
-                    if type(v) == "function" and debug.getinfo(v).name == "LoadIntoGame" then
-                        loadingFunction = v
-                        break
-                    end
-                end
-                
-                if loadingFunction then
-                    pcall(loadingFunction)
-                end
+                -- Gets past the v1551 loading screen first, then waits for the
+                -- function to exist. See _0xa299._0xLoadIntoGame.
+                _0xa299._0xLoadIntoGame()
                 
                 pcall(function()
                     RS:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer("LoadedIn")
@@ -32678,7 +33457,7 @@ _0xa299._0xf02e:AddToggle("Auto Hyper Roar", false, function(Value)
             end
         end
     end)
-end, {Type = "info", Text = "Spams Hyper Roar while farming a boss (the skill's own cooldown paces it)"})
+end, {Type = "info", Text = "Uses Hyper Roar while boss farming"})
 
 _0xa299._0x1915.settings:AddToggle("Auto Seal Tailed Beast", false, function(Value)
     _0xa299._0x1915.autoSealTailedBeast = Value
@@ -33097,19 +33876,9 @@ function _0xa299._0xa2bb()
                     if menuTrack then menuTrack.Playing = false end
                 end
                 
-                local loadingFunction = nil
-                local memory = getgc(true)
-                
-                for i,v in pairs(memory) do
-                    if type(v) == "function" and debug.getinfo(v).name == "LoadIntoGame" then
-                        loadingFunction = v
-                        break
-                    end
-                end
-                
-                if loadingFunction then
-                    pcall(loadingFunction)
-                end
+                -- Gets past the v1551 loading screen first, then waits for the
+                -- function to exist. See _0xa299._0xLoadIntoGame.
+                _0xa299._0xLoadIntoGame()
                 
                 local hrp = _0xa299._0x396d.Character and _0xa299._0x396d.Character:FindFirstChild("HumanoidRootPart")
                 if hrp then
@@ -34697,19 +35466,9 @@ function _0xa299._0xDualFarmForceLoad()
                 if menuTrack then menuTrack.Playing = false end
             end
             
-            local loadingFunction = nil
-            local memory = getgc(true)
-            
-            for i,v in pairs(memory) do
-                if type(v) == "function" and debug.getinfo(v).name == "LoadIntoGame" then
-                    loadingFunction = v
-                    break
-                end
-            end
-            
-            if loadingFunction then
-                pcall(loadingFunction)
-            end
+            -- Gets past the v1551 loading screen first, then waits for the
+            -- function to exist. See _0xa299._0xLoadIntoGame.
+            _0xa299._0xLoadIntoGame()
             _0xa299._0xDualFarmLog("ForceLoad: Load complete")
         end
     else
@@ -40935,7 +41694,7 @@ do
         else
             _0xa299._0x8545:Notify("Combat", "Anti Scrambled Mind disabled", 3, "info")
         end
-    end, {Type = "info", Text = "Clears the ScrambledMind attribute locally so your keys stay normal"})
+    end, {Type = "info", Text = "Makes scrambled mind not invert your keys"})
 end
 
 ---------------------------------------------------------------------
@@ -40987,7 +41746,7 @@ do
             end
             _0xa299._0x8545:Notify("Combat", "No Crow Illusion Shake disabled", 3, "info")
         end
-    end, {Type = "info", Text = "Replaces the Crow Illusion camera shake with a no-op"})
+    end, {Type = "info", Text = "Stops crow illusion shaking your camera"})
 end
 
 ---------------------------------------------------------------------
@@ -41211,7 +41970,7 @@ do
             _0xa299._0x8545:Notify("Combat",
                 "Enabled (game skill function not found yet)", 5, "warning")
         end
-    end, {Type = "info", Text = "Casts Genjutsu Release when caught by Fog Illusion, Feather or Scrambled Mind"})
+    end, {Type = "info", Text = "Breaks you out of genjutsu automatically"})
 end
 
 _0xa299._0x8545:Notify("Welcome", "Kyo Loaded", 5, "check")
