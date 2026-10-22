@@ -676,6 +676,7 @@ _0xa299._0x4470 = _0xa299._0x5ba1:AddRightGroupbox('PVP')
 _0xa299._0xCLOTHBOX = _0xa299._0x5ba1:AddRightGroupbox('Clothing')
 _0xa299._0xc0ed = _0xa299._0x5ba1:AddLeftGroupbox('Quick Options')
 _0xa299._0xUPGR = _0xa299._0x5ba1:AddRightGroupbox('Upgrades')
+_0xa299._0xDISP = _0xa299._0x5ba1:AddLeftGroupbox('Display')
 
 ---------------------------------------------------------------------
 -- VISUALS TAB WITH SUBTABS
@@ -11487,6 +11488,123 @@ _0xa299._0xUPGR:AddButton("Repair Armor", function()
         _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer(unpack(args, 1, 5))
         _0xa299._0x8545:Notify("Economy", "Armor repaired", 3, "check")
     end)
+end)
+
+---------------------------------------------------------------------
+-- STRETCHED RESOLUTION  (Player > General Options > Display)
+--
+-- Multiplies the camera CFrame by a matrix whose Y axis is scaled, which
+-- squashes the rendered view vertically - the same effect as running a
+-- stretched desktop resolution, without touching display settings. Characters
+-- read wider and fill more of the screen at a ratio below 100.
+--
+-- Two things that are easy to get wrong here:
+--
+--   * It binds at RenderPriority.Last instead of using RenderStepped.
+--     RenderStepped fires BEFORE the camera module writes CFrame, so a plain
+--     connection gets overwritten every frame and the effect flickers or does
+--     nothing at all.
+--   * It remembers the CFrame it wrote. If the camera module has not produced
+--     a new one since (paused, cutscene, a frame where the camera did not
+--     update), re-applying the scale would stack on top of the previous one
+--     and the view would collapse toward flat over a few frames.
+--
+-- Nothing to restore on stop: the camera module rewrites CFrame from its own
+-- state on the very next frame, so the view snaps back on its own.
+---------------------------------------------------------------------
+_0xa299._0xStretch = {
+    enabled = false,
+    ratio   = 80,   -- percent; 100 is unstretched
+    bound   = false,
+    key     = "kyo_stretch_" .. tostring(math.random(1000, 9999)),
+    last    = nil,
+}
+
+function _0xa299._0xStretchStep()
+    local cam = workspace.CurrentCamera
+    if not cam then return end
+
+    local current = cam.CFrame
+    if _0xa299._0xStretch.last and current == _0xa299._0xStretch.last then
+        return -- still our own output; the camera has not moved on yet
+    end
+
+    local ratio  = _0xa299._0xStretch.ratio / 100
+    local scaled = current * CFrame.new(0, 0, 0, 1, 0, 0, 0, ratio, 0, 0, 0, 1)
+
+    cam.CFrame = scaled
+    _0xa299._0xStretch.last = scaled
+end
+
+function _0xa299._0xStretchStop()
+    if _0xa299._0xStretch.bound then
+        _0xa299._0xStretch.bound = false
+        pcall(function() _0xa299._0x64b8:UnbindFromRenderStep(_0xa299._0xStretch.key) end)
+    end
+    _0xa299._0xStretch.last = nil
+end
+
+_0xa299._0xDISP:AddToggle("Stretched Res", false, function(Value)
+    _0xa299._0xStretch.enabled = Value
+    if Value then
+        if not _0xa299._0xStretch.bound then
+            _0xa299._0xStretch.bound = true
+            _0xa299._0xStretch.last  = nil
+            _0xa299._0x64b8:BindToRenderStep(_0xa299._0xStretch.key, Enum.RenderPriority.Last.Value, function()
+                if not _0xa299._0xStretch.enabled then return end
+                pcall(_0xa299._0xStretchStep)
+            end)
+        end
+    else
+        _0xa299._0xStretchStop()
+    end
+end, {Flag = "StretchedRes", Type = "info", Text = "Stretches the screen so players look wider"})
+
+_0xa299._0xDISP:AddSlider("Aspect Ratio", 20, 200, 80, function(Value)
+    _0xa299._0xStretch.ratio = Value
+    _0xa299._0xStretch.last  = nil
+end)
+
+---------------------------------------------------------------------
+-- SATURATION BOOSTER
+--
+-- One ColorCorrectionEffect parented to Lighting. Saturation on that effect is
+-- an OFFSET, not a multiplier: 0 is the game's normal look and positive values
+-- push colour, which is why the toggle writes 0 rather than deleting the
+-- effect when it is turned off.
+---------------------------------------------------------------------
+_0xa299._0xSat = { enabled = false, amount = 0.8, effect = nil }
+
+function _0xa299._0xSatEffect()
+    local e = _0xa299._0xSat.effect
+    if e and e.Parent then return e end
+
+    local lighting = game:GetService("Lighting")
+    e = lighting:FindFirstChild("KyoSaturation")
+    if not e then
+        e = Instance.new("ColorCorrectionEffect")
+        e.Name = "KyoSaturation"
+        e.Parent = lighting
+    end
+    _0xa299._0xSat.effect = e
+    return e
+end
+
+function _0xa299._0xSatApply()
+    local e = _0xa299._0xSatEffect()
+    if not e then return end
+    e.Saturation = _0xa299._0xSat.enabled and _0xa299._0xSat.amount or 0
+    e.Enabled = _0xa299._0xSat.enabled
+end
+
+_0xa299._0xDISP:AddToggle("Saturation Booster", false, function(Value)
+    _0xa299._0xSat.enabled = Value
+    pcall(_0xa299._0xSatApply)
+end, {Flag = "SaturationBooster", Type = "info", Text = "Makes colours pop so players stand out"})
+
+_0xa299._0xDISP:AddSlider("Saturation", 0, 1.5, 0.8, function(Value)
+    _0xa299._0xSat.amount = Value
+    if _0xa299._0xSat.enabled then pcall(_0xa299._0xSatApply) end
 end)
 
 ---------------------------------------------------------------------
@@ -41967,6 +42085,68 @@ _0xa299._0xab80:AddDropdown("Silent Aim Mode", {"Toggle", "Hold"}, "Toggle", fun
         _0xa299._0xSilentAimModeChanged()
     end
 end)
+
+_0xa299._0xab80:AddDivider()
+
+---------------------------------------------------------------------
+-- KEYBIND LIST
+--
+-- The panel itself lives in the UI library, which builds it from its own
+-- keybind registry so the rows can never drift from the real binds. All the
+-- library can see is the key and the element name though - whether a feature
+-- is actually ON lives in our tables - so each bind gets a tidy display name
+-- and a predicate here. A bind with no predicate still lists, just without an
+-- ON/OFF (correct for "Fix Inf Stun", which is a one-shot action).
+--
+-- Guarded on SetKeybindInfo existing: raw.githubusercontent caches the library
+-- for about five minutes, so for a short window after a release someone can
+-- load this script against the previous library build. Without the guard that
+-- would be a hard error on load instead of one missing toggle.
+---------------------------------------------------------------------
+if not _0xa299._0x8545.SetKeybindInfo then
+    _0xa299._0xab80:AddLabel("Keybind list needs a UI reload")
+else
+
+_0xa299._0x8545:SetKeybindInfo("FlyKeybind", {
+    Name = "Fly",
+    IsOn = function() return _0xa299._0xc43f.enabled end,
+})
+
+_0xa299._0x8545:SetKeybindInfo("NoclipKeybind", {
+    Name = "Noclip",
+    IsOn = function() return _0xa299._0xc5d2.enabled end,
+})
+
+_0xa299._0x8545:SetKeybindInfo("ESPKeybind", {
+    Name = "ESP",
+    IsOn = function() return _0xa299._0x7676.enabled end,
+})
+
+_0xa299._0x8545:SetKeybindInfo("SilentAimKeybind", {
+    Name = "Silent Aim",
+    -- ON means aiming is actually live: the feature is enabled AND the key has
+    -- it active (Hold held down, or Toggle flipped on).
+    IsOn = function()
+        local sa = _0xa299._0xSilentAim
+        return sa ~= nil and sa.enabled == true and sa.keyActive == true
+    end,
+})
+
+_0xa299._0x8545:SetKeybindInfo("AimbotKeybind", {
+    Name = "Aimbot",
+    IsOn = function() return _0xa299._0x8632.enabled end,
+})
+
+_0xa299._0x8545:SetKeybindInfo("MenuToggleKey", {
+    Name = "Menu",
+    IsOn = function() return _0xa299._0x8545.Open == true end,
+})
+
+_0xa299._0xab80:AddToggle("Keybind List", false, function(Value)
+    _0xa299._0x8545:SetKeybindList(Value)
+end, {Flag = "KeybindList", Type = "info", Text = "Shows your binds on screen, drag it anywhere"})
+
+end
 
 -- Setup keybind input handler (all variables are now defined)
 function _0xa299._0xa319()
