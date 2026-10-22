@@ -809,7 +809,7 @@ _0xa299._0xWEBTAB = _0xa299._0xaec8:AddSubTab("Web")
 
 -- Misc Utility SubTab Groupboxes
 _0xa299._0x5ec2 = _0xa299._0x0e96:AddLeftGroupbox('Spectate')
-_0xa299._0x3a1c = _0xa299._0x0e96:AddRightGroupbox('Unwipe Method')
+-- _0xa299._0x3a1c = _0xa299._0x0e96:AddRightGroupbox('Unwipe Method')   -- DISABLED 2026-10-22 (see the Unwipe block)
 _0xa299._0x3c89 = _0xa299._0x0e96:AddLeftGroupbox('Server')
 _0xa299._0x0c35 = _0xa299._0x0e96:AddRightGroupbox('Auto Wipe')
 _0xa299._0xVILL = _0xa299._0x0e96:AddRightGroupbox('Village')
@@ -8480,263 +8480,739 @@ _0xa299._0xDESTROY:AddButton("Refresh Players", function()
 end)
 
 
+-- DISABLED 2026-10-22 at the user's request: replaced wholesale by the port
+-- of the private build's Silent Aim, which sits directly below. Kept in full
+-- rather than deleted so it can be reverted.
+--
+-- Why it was replaced: the __index hook below ran _0xGetTargetPosition() - a
+-- full player scan - on EVERY property read of EVERY instance, before even
+-- looking at the key, and a second scan on top of that for "Target". It also
+-- faked Mouse.Target (which breaks NPC and UI clicks), never faked Mouse.X/Y
+-- (so screen-ray moves like Lightning Strike still fired at the real mouse),
+-- and restored mt.__index unconditionally on stop, stomping any later hook.
+-- ---------------------------------------------------------------------
+-- -- SILENT AIM
+-- ---------------------------------------------------------------------
+-- _0xa299._0xSilentAim = {
+--     enabled = false,
+--     target = nil,
+--     originalFunctions = {},
+--     connections = {},
+--     prediction = false,
+--     predictionX = 0,
+--     predictionY = 0,
+--     maxDistance = 500,
+--     fov = 90,
+--     showFov = false,
+--     fov360 = false,
+--     fovCircle = nil,
+--     fovColor = Color3.fromRGB(255, 255, 255),
+--     whitelist = {}
+-- }
+--
+-- function _0xa299._0xIsInFov(targetPos)
+--     if _0xa299._0xSilentAim.fov360 then return true end
+--
+--     local cam = workspace.CurrentCamera
+--     if not cam then return false end
+--
+--     local screenPos, onScreen = cam:WorldToScreenPoint(targetPos)
+--     if not onScreen then return false end
+--
+--     local screenCenter = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
+--     local targetScreen = Vector2.new(screenPos.X, screenPos.Y)
+--     local distanceFromCenter = (targetScreen - screenCenter).Magnitude
+--
+--     return distanceFromCenter <= _0xa299._0xSilentAim.fov
+-- end
+--
+-- function _0xa299._0xUpdateFovCircle()
+--     if not _0xa299._0xSilentAim.fovCircle then
+--         _0xa299._0xSilentAim.fovCircle = Drawing.new("Circle")
+--         _0xa299._0xSilentAim.fovCircle.Thickness = 1
+--         _0xa299._0xSilentAim.fovCircle.Color = Color3.fromRGB(255, 255, 255)
+--         _0xa299._0xSilentAim.fovCircle.Filled = false
+--         _0xa299._0xSilentAim.fovCircle.Transparency = 1
+--     end
+--
+--     local cam = workspace.CurrentCamera
+--     if cam then
+--         _0xa299._0xSilentAim.fovCircle.Position = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
+--         _0xa299._0xSilentAim.fovCircle.Radius = _0xa299._0xSilentAim.fov
+--         _0xa299._0xSilentAim.fovCircle.Color = _0xa299._0xSilentAim.fovColor
+--         _0xa299._0xSilentAim.fovCircle.Visible = _0xa299._0xSilentAim.showFov and _0xa299._0xSilentAim.enabled and not _0xa299._0xSilentAim.fov360
+--     end
+-- end
+--
+-- function _0xa299._0xGetSilentAimTarget()
+--     local closestPlayer = nil
+--     local closestDistance = math.huge
+--     local myChar = _0xa299._0x396d.Character
+--     if not myChar or not myChar:FindFirstChild("HumanoidRootPart") then return nil end
+--
+--     local myPos = myChar.HumanoidRootPart.Position
+--     local maxDist = _0xa299._0xSilentAim.maxDistance
+--
+--     for _, player in pairs(_0xa299._0x71bb:GetPlayers()) do
+--         if player ~= _0xa299._0x396d and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+--             -- Skip whitelisted players
+--             if table.find(_0xa299._0xSilentAim.whitelist, player.Name) then continue end
+--
+--             local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+--             if humanoid and humanoid.Health > 0 then
+--                 local targetPos = player.Character.HumanoidRootPart.Position
+--                 local distance = (targetPos - myPos).Magnitude
+--
+--                 if distance < closestDistance and distance <= maxDist then
+--                     -- Check FOV
+--                     if _0xa299._0xIsInFov(targetPos) then
+--                         closestDistance = distance
+--                         closestPlayer = player
+--                     end
+--                 end
+--             end
+--         end
+--     end
+--
+--     return closestPlayer
+-- end
+--
+-- function _0xa299._0xGetTargetPosition()
+--     local target = _0xa299._0xGetSilentAimTarget()
+--     if not target or not target.Character then return nil end
+--
+--     local hrp = target.Character:FindFirstChild("HumanoidRootPart")
+--     if hrp then
+--         local pos = hrp.Position
+--
+--         -- Apply prediction based on velocity
+--         if _0xa299._0xSilentAim.prediction then
+--             local velocity = hrp.AssemblyLinearVelocity or hrp.Velocity or Vector3.new(0, 0, 0)
+--             local predX = _0xa299._0xSilentAim.predictionX or 0
+--             local predY = _0xa299._0xSilentAim.predictionY or 0
+--
+--             -- predX affects horizontal prediction (X and Z), predY affects vertical (Y)
+--             pos = pos + Vector3.new(velocity.X * predX, velocity.Y * predY, velocity.Z * predX)
+--         end
+--
+--         return pos
+--     end
+--     return nil
+-- end
+--
+-- function _0xa299._0xStartSilentAim()
+--     -- Hook Mouse.Hit and Mouse.Target
+--     local player = _0xa299._0x396d
+--     local mouse = player:GetMouse()
+--
+--     local mt = getrawmetatable(game)
+--     local oldIndex = mt.__index
+--     setreadonly(mt, false)
+--
+--     mt.__index = newcclosure(function(self, key)
+--         if _0xa299._0xSilentAim.enabled and self == mouse then
+--             local targetPos = _0xa299._0xGetTargetPosition()
+--             if targetPos then
+--                 if key == "Hit" then
+--                     return CFrame.new(targetPos)
+--                 elseif key == "Target" then
+--                     local target = _0xa299._0xGetSilentAimTarget()
+--                     if target and target.Character then
+--                         return target.Character:FindFirstChild("HumanoidRootPart")
+--                     end
+--                 end
+--             end
+--         end
+--         return oldIndex(self, key)
+--     end)
+--
+--     _0xa299._0xSilentAim.originalFunctions.index = oldIndex
+--     _0xa299._0xSilentAim.originalFunctions.mt = mt
+--
+--     _0xa299._0x8545:Notify("Silent Aim", "Enabled", 3, "check")
+-- end
+--
+-- function _0xa299._0xStopSilentAim()
+--     -- Restore original functions
+--     if _0xa299._0xSilentAim.originalFunctions.mt then
+--         local mt = _0xa299._0xSilentAim.originalFunctions.mt
+--         setreadonly(mt, false)
+--
+--         if _0xa299._0xSilentAim.originalFunctions.index then
+--             mt.__index = _0xa299._0xSilentAim.originalFunctions.index
+--         end
+--
+--         setreadonly(mt, true)
+--     end
+--
+--     -- Disconnect connections
+--     for _, conn in pairs(_0xa299._0xSilentAim.connections) do
+--         if conn and typeof(conn) == "RBXScriptConnection" then
+--             conn:Disconnect()
+--         end
+--     end
+--     _0xa299._0xSilentAim.connections = {}
+--     _0xa299._0xSilentAim.originalFunctions = {}
+--
+--     _0xa299._0x8545:Notify("Silent Aim", "Disabled", 3, "info")
+-- end
+--
+-- _0xa299._0xSilentAimToggle = _0xa299._0xSAIM:AddToggle("Enable Silent Aim", false, function(Value)
+--     _0xa299._0xSilentAim.enabled = Value
+--     if Value then
+--         _0xa299._0xStartSilentAim()
+--         -- Start FOV circle update loop
+--         if not _0xa299._0xSilentAim.connections.fovLoop then
+--             _0xa299._0xSilentAim.connections.fovLoop = _0xa299._0x64b8.RenderStepped:Connect(function()
+--                 _0xa299._0xUpdateFovCircle()
+--             end)
+--         end
+--     else
+--         _0xa299._0xStopSilentAim()
+--         if _0xa299._0xSilentAim.fovCircle then
+--             _0xa299._0xSilentAim.fovCircle.Visible = false
+--         end
+--     end
+-- end)
+--
+-- function _0xa299._0xGetSilentAimPlayerList()
+--     local names = {}
+--     for _, plr in pairs(_0xa299._0x71bb:GetPlayers()) do
+--         if plr ~= _0xa299._0x396d then
+--             table.insert(names, plr.Name)
+--         end
+--     end
+--     return names
+-- end
+--
+-- -- Targeting knobs sit behind the enable toggle; the FOV ring and prediction
+-- -- each keep their own row so the things you actually see stay one click away.
+-- do
+--     local g = _0xa299._0xSilentAimToggle:AddSettings("Silent Aim")
+--
+--     g:AddSlider("Max Distance", 50, 1000, 500, function(Value)
+--         _0xa299._0xSilentAim.maxDistance = Value
+--     end)
+--
+--     _0xa299._0xSilentAimWhitelistDropdown = g:AddMultiDropdown("Whitelist", _0xa299._0xGetSilentAimPlayerList(), {}, function(Value)
+--         _0xa299._0xSilentAim.whitelist = Value
+--     end)
+-- end
+--
+-- do
+--     local t = _0xa299._0xSAIM:AddToggle("Show FOV", false, function(Value)
+--         _0xa299._0xSilentAim.showFov = Value
+--         _0xa299._0xUpdateFovCircle()
+--     end)
+--     t:AddColorPicker(_0xa299._0xSilentAim.fovColor, function(Value)
+--         _0xa299._0xSilentAim.fovColor = Value
+--         _0xa299._0xUpdateFovCircle()
+--     end)
+--
+--     local g = t:AddSettings("FOV")
+--     g:AddSlider("FOV", 10, 500, 90, function(Value)
+--         _0xa299._0xSilentAim.fov = Value
+--         _0xa299._0xUpdateFovCircle()
+--     end)
+--     g:AddToggle("360 FOV", false, function(Value)
+--         _0xa299._0xSilentAim.fov360 = Value
+--         _0xa299._0xUpdateFovCircle()
+--         _0xa299._0x8545:Notify("Silent Aim", "360 FOV " .. (Value and "enabled" or "disabled"), 2, "info")
+--     end, {Type = "warning", Text = "Ignores the FOV ring and targets anywhere"})
+-- end
+--
+-- do
+--     local t = _0xa299._0xSAIM:AddToggle("Prediction", false, function(Value)
+--         _0xa299._0xSilentAim.prediction = Value
+--         _0xa299._0x8545:Notify("Silent Aim", "Prediction " .. (Value and "enabled" or "disabled"), 2, "info")
+--     end, {Type = "info", Text = "Predicts where they will end up"})
+--
+--     local g = t:AddSettings("Prediction")
+--     g:AddSlider("Prediction X", 0, 1, 0, function(Value)
+--         _0xa299._0xSilentAim.predictionX = Value
+--     end)
+--     g:AddSlider("Prediction Y", 0, 1, 0, function(Value)
+--         _0xa299._0xSilentAim.predictionY = Value
+--     end)
+-- end
+--
+-- _0xa299._0x71bb.PlayerAdded:Connect(function()
+--     _0xa299._0xSilentAimWhitelistDropdown:Refresh(_0xa299._0xGetSilentAimPlayerList())
+-- end)
+--
+-- _0xa299._0x71bb.PlayerRemoving:Connect(function(removedPlayer)
+--     _0xa299._0xSilentAimWhitelistDropdown:Refresh(_0xa299._0xGetSilentAimPlayerList())
+--     local idx = table.find(_0xa299._0xSilentAim.whitelist, removedPlayer.Name)
+--     if idx then
+--         table.remove(_0xa299._0xSilentAim.whitelist, idx)
+--     end
+-- end)
+
 ---------------------------------------------------------------------
--- SILENT AIM
+-- SILENT AIM (moves only)
+--
+-- Ported from the private build 2026-10-22; the old implementation sits
+-- commented out directly above this block.
+--
+-- Server-authoritative aim: a move's cast computes its own requirement off
+-- Mouse.Hit.Position, runs its own range checks off Mouse.Hit AND sends
+-- Mouse.Hit.p as startSkill arg3. Rewriting only the remote arg leaves the
+-- requirement and the range checks reading the REAL mouse, so the server's
+-- revalidation sees the mismatch and drops the cast. The only consistent fix
+-- is to fake Mouse.Hit itself so the whole client pipeline agrees.
+--
+-- Faking Mouse.Hit means hooking the shared instance __index, which fires on
+-- EVERY property read of EVERY instance - and the game reads Mouse.Hit every
+-- frame for character facing. The old build ran a FULL player scan inside that
+-- hook on every read (and a second scan for Target); that is what tanked FPS,
+-- not the hook existing. Here the target is resolved ONCE per frame into
+-- cfg.cachedHit and the hook body is O(1): a pointer compare and a cached
+-- CFrame return. The hook is installed only while the feature is on, and is
+-- swapped out again whenever there is nothing cached.
+--
+-- M1s go through CheckMeleeHit with no position, so this is moves only.
 ---------------------------------------------------------------------
-_0xa299._0xSilentAim = {
-    enabled = false,
-    target = nil,
-    originalFunctions = {},
-    connections = {},
-    prediction = false,
-    predictionX = 0,
-    predictionY = 0,
-    maxDistance = 500,
-    fov = 90,
-    showFov = false,
-    fov360 = false,
-    fovCircle = nil,
-    fovColor = Color3.fromRGB(255, 255, 255),
-    whitelist = {}
-}
+do
+    local cfg = {
+        enabled      = false,
+        fov          = 120,
+        fov360       = false,
+        maxDistance  = 500,
+        teamCheck    = false,
+        visibleCheck = false,  -- only target players you have line of sight to
+        ignoreDowned = true,   -- skip knocked / being-carried players
+        whitelist    = {},     -- player names to never target
+        showFov      = false,
+        fovColor     = Color3.fromRGB(255, 255, 255),
+        prediction   = false,
+        predX        = 0.17,
+        predY        = 0,
+        fovCircle    = nil,
+        cachedHit    = nil,    -- CFrame, refreshed once per RenderStepped
+        cachedX      = nil,    -- faked Mouse.X for screen-ray moves (Lightning Strike)
+        cachedY      = nil,    -- faked Mouse.Y
+        keyActive    = false,  -- driven by the Silent Aim keybind in the Keybinds tab
+    }
+    _0xa299._0xSilentAim = cfg
 
-function _0xa299._0xIsInFov(targetPos)
-    if _0xa299._0xSilentAim.fov360 then return true end
-    
-    local cam = workspace.CurrentCamera
-    if not cam then return false end
-    
-    local screenPos, onScreen = cam:WorldToScreenPoint(targetPos)
-    if not onScreen then return false end
-    
-    local screenCenter = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
-    local targetScreen = Vector2.new(screenPos.X, screenPos.Y)
-    local distanceFromCenter = (targetScreen - screenCenter).Magnitude
-    
-    return distanceFromCenter <= _0xa299._0xSilentAim.fov
-end
+    local LP = _0xa299._0x396d
 
-function _0xa299._0xUpdateFovCircle()
-    if not _0xa299._0xSilentAim.fovCircle then
-        _0xa299._0xSilentAim.fovCircle = Drawing.new("Circle")
-        _0xa299._0xSilentAim.fovCircle.Thickness = 1
-        _0xa299._0xSilentAim.fovCircle.Color = Color3.fromRGB(255, 255, 255)
-        _0xa299._0xSilentAim.fovCircle.Filled = false
-        _0xa299._0xSilentAim.fovCircle.Transparency = 1
+    -- Keybind gate. The key and its mode live in the Keybinds tab, which feeds
+    -- cfg.keyActive through _0xSilentAimKeyDown / _0xSilentAimKeyUp:
+    --   no key bound -> aims whenever the feature is enabled
+    --   Toggle       -> each press flips aiming on and off
+    --   Hold         -> aims only while the key is held
+    local function aimKeyActive()
+        if not _0xa299._0x5ab3.silentAimKey then return true end
+        return cfg.keyActive == true
     end
-    
-    local cam = workspace.CurrentCamera
-    if cam then
-        _0xa299._0xSilentAim.fovCircle.Position = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
-        _0xa299._0xSilentAim.fovCircle.Radius = _0xa299._0xSilentAim.fov
-        _0xa299._0xSilentAim.fovCircle.Color = _0xa299._0xSilentAim.fovColor
-        _0xa299._0xSilentAim.fovCircle.Visible = _0xa299._0xSilentAim.showFov and _0xa299._0xSilentAim.enabled and not _0xa299._0xSilentAim.fov360
-    end
-end
 
-function _0xa299._0xGetSilentAimTarget()
-    local closestPlayer = nil
-    local closestDistance = math.huge
-    local myChar = _0xa299._0x396d.Character
-    if not myChar or not myChar:FindFirstChild("HumanoidRootPart") then return nil end
-    
-    local myPos = myChar.HumanoidRootPart.Position
-    local maxDist = _0xa299._0xSilentAim.maxDistance
-    
-    for _, player in pairs(_0xa299._0x71bb:GetPlayers()) do
-        if player ~= _0xa299._0x396d and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-            -- Skip whitelisted players
-            if table.find(_0xa299._0xSilentAim.whitelist, player.Name) then continue end
-            
-            local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
-            if humanoid and humanoid.Health > 0 then
-                local targetPos = player.Character.HumanoidRootPart.Position
-                local distance = (targetPos - myPos).Magnitude
-                
-                if distance < closestDistance and distance <= maxDist then
-                    -- Check FOV
-                    if _0xa299._0xIsInFov(targetPos) then
-                        closestDistance = distance
-                        closestPlayer = player
+    local function teammate(target)
+        if not cfg.teamCheck then return false end
+        local mine, theirs = LP.Team, target.Team
+        if mine and theirs then
+            if mine == theirs then return true end
+            if mine.Name and theirs.Name and mine.Name == theirs.Name then return true end
+        end
+        return false
+    end
+
+    local function whitelisted(target)
+        return table.find(cfg.whitelist, target.Name) ~= nil
+    end
+
+    -- Knocked / being carried, read off ReplicatedStorage.Settings.<name> - the
+    -- same Knocked and BeingCarried ("None" when free) values the game itself
+    -- checks, via the helper the Destroy Player farm already uses.
+    local function downed(target)
+        local ps = _0xa299._0xDestroySettings(target.Name)
+        if not ps then return false end
+        local knocked = ps:FindFirstChild("Knocked")
+        if knocked and knocked.Value == true then return true end
+        local carried = ps:FindFirstChild("BeingCarried")
+        return carried ~= nil and carried.Value ~= "None" and carried.Value ~= ""
+    end
+
+    -- Line of sight from the camera. RespectCanCollide lets non-collidable
+    -- parts (foliage, effects, hitboxes) through, and a hit on some other
+    -- character still counts as visible - only world geometry blocks.
+    local rayParams = RaycastParams.new()
+    rayParams.FilterType        = Enum.RaycastFilterType.Exclude
+    rayParams.IgnoreWater       = true
+    rayParams.RespectCanCollide = true
+    local rayChar, rayDebris = nil, nil
+
+    local function visibleTo(cam, char, part)
+        local me, debris = LP.Character, workspace:FindFirstChild("Debris")
+        if me ~= rayChar or debris ~= rayDebris then
+            rayChar, rayDebris = me, debris
+            rayParams.FilterDescendantsInstances = { me, debris }
+        end
+        local origin = cam.CFrame.Position
+        local result = workspace:Raycast(origin, part.Position - origin, rayParams)
+        if not result then return true end
+        local hit = result.Instance
+        if hit:IsDescendantOf(char) then return true end
+        local model = hit:FindFirstAncestorOfClass("Model")
+        return model ~= nil and model:FindFirstChildOfClass("Humanoid") ~= nil
+    end
+
+    -- Body first, then the head (peeking over cover).
+    local function canSee(cam, char, hrp)
+        if visibleTo(cam, char, hrp) then return true end
+        local head = char:FindFirstChild("Head")
+        return head ~= nil and visibleTo(cam, char, head)
+    end
+
+    -- Full checks for one candidate (team, whitelist, knocked/carried, health,
+    -- line of sight). pickTarget only calls this for a player who would beat
+    -- the current best, so with a full server the Settings lookups and raycasts
+    -- run for a handful of players a frame instead of all of them - same
+    -- result: the lowest score among valid players.
+    local function valid(plr, char, hrp, cam)
+        if teammate(plr) or whitelisted(plr) then return false end
+        if cfg.ignoreDowned and downed(plr) then return false end
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not hum or hum.Health <= 0 then return false end
+        return not cfg.visibleCheck or canSee(cam, char, hrp)
+    end
+
+    -- Closest valid target: by screen distance to the crosshair (FOV mode) or
+    -- by world distance (360 mode, ignores where it is on screen). maxOverride
+    -- lets a caller pick within its own range instead of Max Range.
+    local function pickTarget(maxOverride)
+        local cam = workspace.CurrentCamera
+        local myChar = LP.Character
+        local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+        if not cam or not myRoot then return nil end
+
+        local vp     = cam.ViewportSize
+        local cx, cy = vp.X / 2, vp.Y / 2
+        local myPos  = myRoot.Position
+        local maxDist = maxOverride or cfg.maxDistance
+        local fov     = cfg.fov
+        local best, bestScore = nil, math.huge
+
+        for _, plr in ipairs(_0xa299._0x71bb:GetPlayers()) do
+            local char = plr ~= LP and plr.Character
+            local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                local pos       = hrp.Position
+                local worldDist = (pos - myPos).Magnitude
+                if worldDist <= maxDist then
+                    local score = nil
+                    if cfg.fov360 then
+                        score = worldDist -- closest in the world, anywhere around you
+                    else
+                        local sp, onScreen = cam:WorldToViewportPoint(pos)
+                        if onScreen then
+                            local dx, dy = sp.X - cx, sp.Y - cy
+                            local d = math.sqrt(dx * dx + dy * dy)
+                            if d <= fov then score = d end
+                        end
+                    end
+                    if score and score < bestScore and valid(plr, char, hrp, cam) then
+                        bestScore, best = score, hrp
                     end
                 end
             end
         end
+        return best
     end
-    
-    return closestPlayer
-end
+    -- Exposed so anything else that wants a target uses the same filters.
+    _0xa299._0xSilentAimPick = pickTarget
 
-function _0xa299._0xGetTargetPosition()
-    local target = _0xa299._0xGetSilentAimTarget()
-    if not target or not target.Character then return nil end
-    
-    local hrp = target.Character:FindFirstChild("HumanoidRootPart")
-    if hrp then
-        local pos = hrp.Position
-        
-        -- Apply prediction based on velocity
-        if _0xa299._0xSilentAim.prediction then
-            local velocity = hrp.AssemblyLinearVelocity or hrp.Velocity or Vector3.new(0, 0, 0)
-            local predX = _0xa299._0xSilentAim.predictionX or 0
-            local predY = _0xa299._0xSilentAim.predictionY or 0
-            
-            -- predX affects horizontal prediction (X and Z), predY affects vertical (Y)
-            pos = pos + Vector3.new(velocity.X * predX, velocity.Y * predY, velocity.Z * predX)
+    -- Mouse override. "Hit" covers position-aimed moves; "X"/"Y" cover the ones
+    -- that aim via Mouse.X/Y + ScreenPointToRay (Lightning Strike, Wooden Dragon).
+    -- Target is deliberately left alone so NPC and UI clicks keep working - the
+    -- old build faked it and broke them.
+    --
+    -- The hook is built once and only SWAPPED INTO the metatable while there is
+    -- a cached target (see refresh). The faked values only ever applied with a
+    -- target cached, so behaviour is identical - but with nobody in FOV, the
+    -- Hold key up, or Toggle off, every property read in the game runs the
+    -- untouched native __index: zero overhead. While hooked, a non-mouse read
+    -- costs one upvalue pointer compare and a pass-through.
+    local idx = { mt = nil, real = nil, hook = nil, on = false }
+
+    local function installIndex()
+        if idx.hook then return true end
+        if not (getrawmetatable and setreadonly) then
+            _0xa299._0x8545:Notify("Silent Aim", "Your executor is missing getrawmetatable", 6, "warning")
+            return false
         end
-        
-        return pos
-    end
-    return nil
-end
-
-function _0xa299._0xStartSilentAim()
-    -- Hook Mouse.Hit and Mouse.Target
-    local player = _0xa299._0x396d
-    local mouse = player:GetMouse()
-    
-    local mt = getrawmetatable(game)
-    local oldIndex = mt.__index
-    setreadonly(mt, false)
-    
-    mt.__index = newcclosure(function(self, key)
-        if _0xa299._0xSilentAim.enabled and self == mouse then
-            local targetPos = _0xa299._0xGetTargetPosition()
-            if targetPos then
-                if key == "Hit" then
-                    return CFrame.new(targetPos)
-                elseif key == "Target" then
-                    local target = _0xa299._0xGetSilentAimTarget()
-                    if target and target.Character then
-                        return target.Character:FindFirstChild("HumanoidRootPart")
+        local ok = pcall(function()
+            local ncc   = newcclosure or function(f) return f end
+            local mouse = LP:GetMouse()
+            local mt    = getrawmetatable(game)
+            local real  = mt.__index
+            idx.mt, idx.real = mt, real
+            idx.hook = ncc(function(self, key)
+                if self == mouse then
+                    if key == "Hit" then
+                        local v = cfg.cachedHit
+                        if v then return v end
+                    elseif key == "X" then
+                        local v = cfg.cachedX
+                        if v then return v end
+                    elseif key == "Y" then
+                        local v = cfg.cachedY
+                        if v then return v end
                     end
                 end
-            end
-        end
-        return oldIndex(self, key)
-    end)
-    
-    _0xa299._0xSilentAim.originalFunctions.index = oldIndex
-    _0xa299._0xSilentAim.originalFunctions.mt = mt
-    
-    _0xa299._0x8545:Notify("Silent Aim", "Enabled", 3, "check")
-end
-
-function _0xa299._0xStopSilentAim()
-    -- Restore original functions
-    if _0xa299._0xSilentAim.originalFunctions.mt then
-        local mt = _0xa299._0xSilentAim.originalFunctions.mt
-        setreadonly(mt, false)
-        
-        if _0xa299._0xSilentAim.originalFunctions.index then
-            mt.__index = _0xa299._0xSilentAim.originalFunctions.index
-        end
-        
-        setreadonly(mt, true)
-    end
-    
-    -- Disconnect connections
-    for _, conn in pairs(_0xa299._0xSilentAim.connections) do
-        if conn and typeof(conn) == "RBXScriptConnection" then
-            conn:Disconnect()
-        end
-    end
-    _0xa299._0xSilentAim.connections = {}
-    _0xa299._0xSilentAim.originalFunctions = {}
-    
-    _0xa299._0x8545:Notify("Silent Aim", "Disabled", 3, "info")
-end
-
-_0xa299._0xSilentAimToggle = _0xa299._0xSAIM:AddToggle("Enable Silent Aim", false, function(Value)
-    _0xa299._0xSilentAim.enabled = Value
-    if Value then
-        _0xa299._0xStartSilentAim()
-        -- Start FOV circle update loop
-        if not _0xa299._0xSilentAim.connections.fovLoop then
-            _0xa299._0xSilentAim.connections.fovLoop = _0xa299._0x64b8.RenderStepped:Connect(function()
-                _0xa299._0xUpdateFovCircle()
+                return real(self, key)
             end)
+        end)
+        if not ok then idx.hook = nil end
+        return ok
+    end
+
+    -- Swap between exactly our hook and the __index we wrapped. If anything
+    -- else has hooked __index on top in the meantime it is left alone rather
+    -- than clobbered or chained into a loop (our hook just stays underneath,
+    -- passing through whenever the cache is empty). The old build assigned
+    -- __index back unconditionally, which stomped any later hook.
+    local function setHooked(want)
+        if want == idx.on or not idx.hook then return end
+        pcall(function()
+            local mt  = idx.mt
+            local cur = mt.__index
+            if want and cur == idx.real then
+                setreadonly(mt, false)
+                mt.__index = idx.hook
+                setreadonly(mt, true)
+            elseif not want and cur == idx.hook then
+                setreadonly(mt, false)
+                mt.__index = idx.real
+                setreadonly(mt, true)
+            end
+            idx.on = mt.__index == idx.hook
+        end)
+    end
+
+    -- Per-frame cache. The full scan runs here once, NOT on every Hit read.
+    local refreshConn = nil
+
+    local function clearCache()
+        cfg.cachedHit, cfg.cachedX, cfg.cachedY = nil, nil, nil
+        setHooked(false)
+    end
+
+    local function stopRefresh()
+        if refreshConn then refreshConn:Disconnect(); refreshConn = nil end
+        clearCache()
+    end
+
+    local function refresh()
+        -- Feature switched off some other way (e.g. a config load): shut down.
+        if not cfg.enabled then stopRefresh(); return end
+        -- Key not active (Hold released / Toggle off): hand back the real mouse
+        -- until the key turns it back on.
+        if not aimKeyActive() then clearCache(); return end
+
+        local hrp = pickTarget()
+        if not hrp then clearCache(); return end
+
+        local pos = hrp.Position
+        if cfg.prediction then
+            local vel = hrp.AssemblyLinearVelocity or hrp.Velocity or Vector3.zero
+            pos = pos + Vector3.new(vel.X * cfg.predX, vel.Y * cfg.predY, vel.Z * cfg.predX)
         end
-    else
-        _0xa299._0xStopSilentAim()
-        if _0xa299._0xSilentAim.fovCircle then
-            _0xa299._0xSilentAim.fovCircle.Visible = false
+        cfg.cachedHit = CFrame.new(pos)
+
+        -- Screen coords for moves that aim via Mouse.X/Y + ScreenPointToRay.
+        -- WorldToScreenPoint matches Mouse.X/Y's inset. Only set while the
+        -- target is on screen, so off-screen / behind-camera targets fall back
+        -- to the real mouse.
+        local cam = workspace.CurrentCamera
+        if cam then
+            local sp, onScreen = cam:WorldToScreenPoint(pos)
+            if onScreen then
+                cfg.cachedX, cfg.cachedY = sp.X, sp.Y
+            else
+                cfg.cachedX, cfg.cachedY = nil, nil
+            end
+        end
+
+        setHooked(true)
+    end
+
+    local function startRefresh()
+        if refreshConn then return end
+        refreshConn = _0xa299._0x64b8.RenderStepped:Connect(refresh)
+    end
+
+    -- FOV ring: one Drawing, driven only while the feature and the ring are on.
+    local fovConn = nil
+    local function updateFov()
+        local circle = cfg.fovCircle
+        if not circle then
+            if not (Drawing and Drawing.new) then return end
+            local ok, made = pcall(function()
+                local d = Drawing.new("Circle")
+                d.Thickness    = 1
+                d.Filled       = false
+                d.Transparency = 1
+                d.Color        = cfg.fovColor
+                return d
+            end)
+            if not ok or not made then return end
+            circle = made
+            cfg.fovCircle = circle
+        end
+        local cam = workspace.CurrentCamera
+        if cam then
+            circle.Position = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
+            circle.Radius   = cfg.fov
+            circle.Color    = cfg.fovColor
+            circle.Visible  = cfg.showFov and cfg.enabled and not cfg.fov360
         end
     end
-end)
+    local function startFov()
+        if fovConn then return end
+        fovConn = _0xa299._0x64b8.RenderStepped:Connect(updateFov)
+    end
+    local function stopFov()
+        if fovConn then fovConn:Disconnect(); fovConn = nil end
+        if cfg.fovCircle then cfg.fovCircle.Visible = false end
+    end
 
-function _0xa299._0xGetSilentAimPlayerList()
-    local names = {}
-    for _, plr in pairs(_0xa299._0x71bb:GetPlayers()) do
-        if plr ~= _0xa299._0x396d then
-            table.insert(names, plr.Name)
+    -- Called by the keybind handler in the Keybinds tab.
+    function _0xa299._0xSilentAimKeyDown()
+        if _0xa299._0x5ab3.silentAimMode == "Hold" then
+            cfg.keyActive = true
+        else
+            cfg.keyActive = not cfg.keyActive
+            if cfg.enabled then
+                _0xa299._0x8545:Notify("Silent Aim", cfg.keyActive and "ON" or "OFF", 1.5, "info")
+            end
         end
     end
-    return names
-end
 
--- Targeting knobs sit behind the enable toggle; the FOV ring and prediction
--- each keep their own row so the things you actually see stay one click away.
-do
-    local g = _0xa299._0xSilentAimToggle:AddSettings("Silent Aim")
-
-    g:AddSlider("Max Distance", 50, 1000, 500, function(Value)
-        _0xa299._0xSilentAim.maxDistance = Value
-    end)
-
-    _0xa299._0xSilentAimWhitelistDropdown = g:AddMultiDropdown("Whitelist", _0xa299._0xGetSilentAimPlayerList(), {}, function(Value)
-        _0xa299._0xSilentAim.whitelist = Value
-    end)
-end
-
-do
-    local t = _0xa299._0xSAIM:AddToggle("Show FOV", false, function(Value)
-        _0xa299._0xSilentAim.showFov = Value
-        _0xa299._0xUpdateFovCircle()
-    end)
-    t:AddColorPicker(_0xa299._0xSilentAim.fovColor, function(Value)
-        _0xa299._0xSilentAim.fovColor = Value
-        _0xa299._0xUpdateFovCircle()
-    end)
-
-    local g = t:AddSettings("FOV")
-    g:AddSlider("FOV", 10, 500, 90, function(Value)
-        _0xa299._0xSilentAim.fov = Value
-        _0xa299._0xUpdateFovCircle()
-    end)
-    g:AddToggle("360 FOV", false, function(Value)
-        _0xa299._0xSilentAim.fov360 = Value
-        _0xa299._0xUpdateFovCircle()
-        _0xa299._0x8545:Notify("Silent Aim", "360 FOV " .. (Value and "enabled" or "disabled"), 2, "info")
-    end, {Type = "warning", Text = "Ignores the FOV ring and targets anywhere"})
-end
-
-do
-    local t = _0xa299._0xSAIM:AddToggle("Prediction", false, function(Value)
-        _0xa299._0xSilentAim.prediction = Value
-        _0xa299._0x8545:Notify("Silent Aim", "Prediction " .. (Value and "enabled" or "disabled"), 2, "info")
-    end, {Type = "info", Text = "Predicts where they will end up"})
-
-    local g = t:AddSettings("Prediction")
-    g:AddSlider("Prediction X", 0, 1, 0, function(Value)
-        _0xa299._0xSilentAim.predictionX = Value
-    end)
-    g:AddSlider("Prediction Y", 0, 1, 0, function(Value)
-        _0xa299._0xSilentAim.predictionY = Value
-    end)
-end
-
-_0xa299._0x71bb.PlayerAdded:Connect(function()
-    _0xa299._0xSilentAimWhitelistDropdown:Refresh(_0xa299._0xGetSilentAimPlayerList())
-end)
-
-_0xa299._0x71bb.PlayerRemoving:Connect(function(removedPlayer)
-    _0xa299._0xSilentAimWhitelistDropdown:Refresh(_0xa299._0xGetSilentAimPlayerList())
-    local idx = table.find(_0xa299._0xSilentAim.whitelist, removedPlayer.Name)
-    if idx then
-        table.remove(_0xa299._0xSilentAim.whitelist, idx)
+    function _0xa299._0xSilentAimKeyUp()
+        if _0xa299._0x5ab3.silentAimMode == "Hold" then
+            cfg.keyActive = false
+        end
     end
-end)
+
+    -- Either mode starts with aiming off until the key is used, so flipping the
+    -- mode mid-session cannot leave a stale "on".
+    function _0xa299._0xSilentAimModeChanged()
+        cfg.keyActive = false
+    end
+
+    local function playerNames()
+        local names = {}
+        for _, p in ipairs(_0xa299._0x71bb:GetPlayers()) do
+            if p ~= LP then names[#names + 1] = p.Name end
+        end
+        table.sort(names)
+        return names
+    end
+
+    _0xa299._0xSilentAimToggle = _0xa299._0xSAIM:AddToggle("Enable Silent Aim", false, function(Value)
+        cfg.enabled = Value
+        if Value then
+            if not installIndex() then
+                cfg.enabled = false
+                return
+            end
+            cfg.keyActive = false
+            startRefresh()
+            if cfg.showFov then startFov() end
+            _0xa299._0x8545:Notify("Silent Aim", "Enabled", 3, "check")
+        else
+            stopRefresh()
+            setHooked(false)
+            stopFov()
+            _0xa299._0x8545:Notify("Silent Aim", "Disabled", 3, "info")
+        end
+    end, {Flag = "SilentAimEnable", Type = "info", Text = "Your moves land on the closest player without aiming"})
+
+    -- Targeting knobs sit behind the enable toggle; the FOV ring and prediction
+    -- each keep their own row so the things you actually see stay one click away.
+    do
+        local g = _0xa299._0xSilentAimToggle:AddSettings("Silent Aim")
+
+        g:AddSlider("Aim FOV", 10, 600, 120, function(Value)
+            cfg.fov = Value
+        end)
+
+        g:AddToggle("360 FOV", false, function(Value)
+            cfg.fov360 = Value
+            if cfg.fovCircle then
+                cfg.fovCircle.Visible = cfg.showFov and cfg.enabled and not cfg.fov360
+            end
+        end, {Flag = "SilentAim360", Type = "info", Text = "Targets players anywhere around you, not just in front"})
+
+        g:AddSlider("Max Range", 50, 1000, 500, function(Value)
+            cfg.maxDistance = Value
+        end)
+
+        g:AddToggle("Team Check", false, function(Value)
+            cfg.teamCheck = Value
+        end, {Flag = "SilentAimTeam", Type = "info", Text = "Never targets your own team"})
+
+        g:AddToggle("Visible Check", false, function(Value)
+            cfg.visibleCheck = Value
+        end, {Flag = "SilentAimVisible", Type = "info", Text = "Only targets players you can actually see"})
+
+        g:AddToggle("Ignore Knocked / Carried", true, function(Value)
+            cfg.ignoreDowned = Value
+        end, {Flag = "SilentAimIgnoreDowned", Type = "info", Text = "Skips players who are already knocked or being carried"})
+
+        _0xa299._0xSilentAimWhitelistDropdown = g:AddMultiDropdown("Whitelist", playerNames(), {}, function(Value)
+            cfg.whitelist = Value or {}
+        end)
+
+        g:AddButton("Refresh Whitelist", function()
+            local names = playerNames()
+            _0xa299._0xSilentAimWhitelistDropdown:Refresh(names)
+            _0xa299._0x8545:Notify("Silent Aim", "Refreshed player list (" .. #names .. " players)", 2, "info")
+        end)
+    end
+
+    do
+        local t = _0xa299._0xSAIM:AddToggle("Show FOV", false, function(Value)
+            cfg.showFov = Value
+            if Value and cfg.enabled then startFov() else stopFov() end
+        end, {Flag = "SilentAimShowFov", Type = "info", Text = "Shows the aim circle on your screen"})
+
+        t:AddColorPicker(cfg.fovColor, function(Value)
+            cfg.fovColor = Value
+            if cfg.fovCircle then cfg.fovCircle.Color = Value end
+        end)
+    end
+
+    do
+        local t = _0xa299._0xSAIM:AddToggle("Prediction", false, function(Value)
+            cfg.prediction = Value
+        end, {Flag = "SilentAimPrediction", Type = "info", Text = "Aims ahead of where they are running"})
+
+        local g = t:AddSettings("Prediction")
+        g:AddSlider("Prediction X %", 0, 100, 17, function(Value)
+            cfg.predX = Value / 100
+        end)
+        g:AddSlider("Prediction Y %", 0, 100, 0, function(Value)
+            cfg.predY = Value / 100
+        end)
+    end
+
+    -- Keep the whitelist options current as people join and leave.
+    _0xa299._0x71bb.PlayerAdded:Connect(function()
+        pcall(function()
+            _0xa299._0xSilentAimWhitelistDropdown:Refresh(playerNames())
+        end)
+    end)
+
+    _0xa299._0x71bb.PlayerRemoving:Connect(function(removedPlayer)
+        pcall(function()
+            _0xa299._0xSilentAimWhitelistDropdown:Refresh(playerNames())
+        end)
+        local i = table.find(cfg.whitelist, removedPlayer.Name)
+        if i then table.remove(cfg.whitelist, i) end
+    end)
+end
 
 ---------------------------------------------------------------------
 -- AUTO PICKUP ITEMS
@@ -16587,133 +17063,138 @@ end)
 
 _0xa299._0xEMOT:AddLabel("Looped emotes need Stop Emote")
 
--- Unwipe Method UI
-_0xa299._0x3a1c:AddButton("Check If Eligible", function()
-    local success1, result1 = pcall(function()
-        local args = {"GetQuestProgress", "Samurai's Retribution"}
-        return _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer(unpack(args))
-    end)
-    
-    local success2, result2 = pcall(function()
-        local args = {"GetQuestProgress", "Reaver's Revenge"}
-        return _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer(unpack(args))
-    end)
-    
-    if not success1 or not success2 then
-        _0xa299._0x8545:Notify("Unwipe", "Failed to check eligibility", 3, "error")
-        return
-    end
-    
-    local eligible1 = not _0xa299._0xQDone(result1)
-    local eligible2 = not _0xa299._0xQDone(result2)
-    
-    if not eligible1 and not eligible2 then
-        _0xa299._0x8545:Notify("Unwipe", "You are not Eligible for Unwipe", 3, "error")
-        return
-    end
-    
-    local function hasItem(itemName)
-        local success, playerdata = pcall(function()
-            return _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer("GetData")
-        end)
-        
-        if not success or not playerdata then return false end
-        
-        local function checkLocation(location)
-            if not location then return false end
-            for _, itemData in pairs(location) do
-                if type(itemData) == "table" and itemData.Item == itemName then
-                    return true
-                end
-            end
-            return false
-        end
-        
-        return checkLocation(playerdata["Inventory"]) or checkLocation(playerdata["Loadout"])
-    end
-    
-    local missingItems = {}
-    
-    if eligible1 and not hasItem("Lava Snakeskin") then
-        table.insert(missingItems, "Lava Snakeskin")
-    end
-    
-    if eligible2 and not hasItem("Samurai Soul") then
-        table.insert(missingItems, "Samurai Soul")
-    end
-    
-    if #missingItems > 0 then
-        _0xa299._0x8545:Notify("Unwipe", "You are Eligible, but missing: " .. table.concat(missingItems, ", "), 5, "warning")
-    else
-        _0xa299._0x8545:Notify("Unwipe", "You are Eligible for Unwipe", 3, "check")
-    end
-end)
-
-_0xa299._0x3a1c:AddButton("Unwipe", function()
-    local success, playerdata = pcall(function()
-        return _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer("GetData")
-    end)
-    
-    if not success or not playerdata then
-        _0xa299._0x8545:Notify("Unwipe", "Failed to get player data", 3, "error")
-        return
-    end
-    
-    if playerdata["LifeForce"] ~= 0 then
-        _0xa299._0x8545:Notify("Unwipe", "You Are not Wiped", 3, "error")
-        return
-    end
-    
-    local unwipeOverlay = Instance.new("ScreenGui")
-    unwipeOverlay.Name = "UnwipeOverlay"
-    unwipeOverlay.Parent = _0xa299._0x396d:WaitForChild("PlayerGui")
-    unwipeOverlay.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    unwipeOverlay.IgnoreGuiInset = true
-    unwipeOverlay.DisplayOrder = 999
-    
-    local blackFrame = Instance.new("Frame")
-    blackFrame.Name = "BlackFrame"
-    blackFrame.Parent = unwipeOverlay
-    blackFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-    blackFrame.Size = UDim2.new(1, 0, 1, 0)
-    blackFrame.BorderSizePixel = 0
-    
-    local unwipeText = Instance.new("TextLabel")
-    unwipeText.Name = "UnwipeText"
-    unwipeText.Parent = blackFrame
-    unwipeText.BackgroundTransparency = 1
-    unwipeText.Size = UDim2.new(1, 0, 1, 0)
-    unwipeText.Font = Enum.Font.GothamBold
-    unwipeText.Text = "Unwiping"
-    unwipeText.TextColor3 = Color3.fromRGB(255, 255, 255)
-    unwipeText.TextSize = 48
-    
-    task.spawn(function()
-        pcall(function()
-            local args1 = {"StartQuest", "Samurai's Retribution", 2}
-            _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer(unpack(args1))
-            
-            local args2 = {"StartQuest", "Reaver's Revenge", 2}
-            _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer(unpack(args2))
-            
-            task.wait(0.5)
-            
-            local progressArgs1 = {"GetQuestProgress", "Samurai's Retribution"}
-            _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer(unpack(progressArgs1))
-            
-            local progressArgs2 = {"GetQuestProgress", "Reaver's Revenge"}
-            _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer(unpack(progressArgs2))
-            
-            task.wait(4)
-            
-            if unwipeOverlay and unwipeOverlay.Parent then
-                unwipeOverlay:Destroy()
-            end
-            
-            _0xa299._0x8545:Notify("Unwipe", "Unwipe done", 3, "check")
-        end)
-    end)
-end)
+-- DISABLED 2026-10-22 at the user's request: the Unwipe feature is believed
+-- to be DETECTED. It drove the "Samurai's Retribution" and "Reaver's Revenge"
+-- quests and showed a full-screen overlay while it ran; both of those quests
+-- are commented out below as well. Left in place rather than deleted so it
+-- can be brought back if it turns out to be safe.
+-- -- Unwipe Method UI
+-- _0xa299._0x3a1c:AddButton("Check If Eligible", function()
+--     local success1, result1 = pcall(function()
+--         local args = {"GetQuestProgress", "Samurai's Retribution"}
+--         return _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer(unpack(args))
+--     end)
+--
+--     local success2, result2 = pcall(function()
+--         local args = {"GetQuestProgress", "Reaver's Revenge"}
+--         return _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer(unpack(args))
+--     end)
+--
+--     if not success1 or not success2 then
+--         _0xa299._0x8545:Notify("Unwipe", "Failed to check eligibility", 3, "error")
+--         return
+--     end
+--
+--     local eligible1 = not _0xa299._0xQDone(result1)
+--     local eligible2 = not _0xa299._0xQDone(result2)
+--
+--     if not eligible1 and not eligible2 then
+--         _0xa299._0x8545:Notify("Unwipe", "You are not Eligible for Unwipe", 3, "error")
+--         return
+--     end
+--
+--     local function hasItem(itemName)
+--         local success, playerdata = pcall(function()
+--             return _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer("GetData")
+--         end)
+--
+--         if not success or not playerdata then return false end
+--
+--         local function checkLocation(location)
+--             if not location then return false end
+--             for _, itemData in pairs(location) do
+--                 if type(itemData) == "table" and itemData.Item == itemName then
+--                     return true
+--                 end
+--             end
+--             return false
+--         end
+--
+--         return checkLocation(playerdata["Inventory"]) or checkLocation(playerdata["Loadout"])
+--     end
+--
+--     local missingItems = {}
+--
+--     if eligible1 and not hasItem("Lava Snakeskin") then
+--         table.insert(missingItems, "Lava Snakeskin")
+--     end
+--
+--     if eligible2 and not hasItem("Samurai Soul") then
+--         table.insert(missingItems, "Samurai Soul")
+--     end
+--
+--     if #missingItems > 0 then
+--         _0xa299._0x8545:Notify("Unwipe", "You are Eligible, but missing: " .. table.concat(missingItems, ", "), 5, "warning")
+--     else
+--         _0xa299._0x8545:Notify("Unwipe", "You are Eligible for Unwipe", 3, "check")
+--     end
+-- end)
+--
+-- _0xa299._0x3a1c:AddButton("Unwipe", function()
+--     local success, playerdata = pcall(function()
+--         return _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer("GetData")
+--     end)
+--
+--     if not success or not playerdata then
+--         _0xa299._0x8545:Notify("Unwipe", "Failed to get player data", 3, "error")
+--         return
+--     end
+--
+--     if playerdata["LifeForce"] ~= 0 then
+--         _0xa299._0x8545:Notify("Unwipe", "You Are not Wiped", 3, "error")
+--         return
+--     end
+--
+--     local unwipeOverlay = Instance.new("ScreenGui")
+--     unwipeOverlay.Name = "UnwipeOverlay"
+--     unwipeOverlay.Parent = _0xa299._0x396d:WaitForChild("PlayerGui")
+--     unwipeOverlay.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+--     unwipeOverlay.IgnoreGuiInset = true
+--     unwipeOverlay.DisplayOrder = 999
+--
+--     local blackFrame = Instance.new("Frame")
+--     blackFrame.Name = "BlackFrame"
+--     blackFrame.Parent = unwipeOverlay
+--     blackFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+--     blackFrame.Size = UDim2.new(1, 0, 1, 0)
+--     blackFrame.BorderSizePixel = 0
+--
+--     local unwipeText = Instance.new("TextLabel")
+--     unwipeText.Name = "UnwipeText"
+--     unwipeText.Parent = blackFrame
+--     unwipeText.BackgroundTransparency = 1
+--     unwipeText.Size = UDim2.new(1, 0, 1, 0)
+--     unwipeText.Font = Enum.Font.GothamBold
+--     unwipeText.Text = "Unwiping"
+--     unwipeText.TextColor3 = Color3.fromRGB(255, 255, 255)
+--     unwipeText.TextSize = 48
+--
+--     task.spawn(function()
+--         pcall(function()
+--             local args1 = {"StartQuest", "Samurai's Retribution", 2}
+--             _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer(unpack(args1))
+--
+--             local args2 = {"StartQuest", "Reaver's Revenge", 2}
+--             _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer(unpack(args2))
+--
+--             task.wait(0.5)
+--
+--             local progressArgs1 = {"GetQuestProgress", "Samurai's Retribution"}
+--             _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer(unpack(progressArgs1))
+--
+--             local progressArgs2 = {"GetQuestProgress", "Reaver's Revenge"}
+--             _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer(unpack(progressArgs2))
+--
+--             task.wait(4)
+--
+--             if unwipeOverlay and unwipeOverlay.Parent then
+--                 unwipeOverlay:Destroy()
+--             end
+--
+--             _0xa299._0x8545:Notify("Unwipe", "Unwipe done", 3, "check")
+--         end)
+--     end)
+-- end)
 
 -- Server UI
 _0xa299._0xaf82 = ""
@@ -36895,15 +37376,15 @@ _0xa299._0x8d2d = {
     "Boss Mission",
     "Cratos",
     "Kurenai Genjutsu",
-    "Lava Snake",
-    "Samurai",
+--    "Lava Snake",   -- DISABLED 2026-10-22
+--    "Samurai",   -- DISABLED 2026-10-22
     "Combat Instructor",
     "Bolive Crops",
     "Manda Mission",
     "Kamui Resistance"
 }
 
-function _0xa299._0x9b94()
+function _0xa299._0x9b94Run()
     if _0xa299._0x8434 == nil or not _0xa299._0x396d.Character then
         _0xa299._0x8545:Notify("Quest", "Select a quest first", 3, "error")
         return
@@ -40143,21 +40624,27 @@ function _0xa299._0x9b94()
             _0xa299._0x8545:Notify("Quest", "Kurenai quest timed out (still not Finished)", 4, "warning")
         end
         
-    elseif _0xa299._0x8434 == "Lava Snake" then
-        local args = {"StartQuest", "Reaver's Revenge", 2}
-        RS:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer(unpack(args))
-        task.wait(1)
-        local progressArgs = {"GetQuestProgress", "Reaver's Revenge"}
-        RS:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer(unpack(progressArgs))
-        _0xa299._0x8545:Notify("Quest", "Lava Snake quest completed", 3, "check")
+    -- DISABLED 2026-10-22 at the user's request: the Lava Snake quest
+    -- ("Reaver's Revenge"). The Lava Snake boss itself was already removed
+    -- from the game and commented out on 2026-10-21.
+--     elseif _0xa299._0x8434 == "Lava Snake" then
+--         local args = {"StartQuest", "Reaver's Revenge", 2}
+--         RS:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer(unpack(args))
+--         task.wait(1)
+--         local progressArgs = {"GetQuestProgress", "Reaver's Revenge"}
+--         RS:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer(unpack(progressArgs))
+--         _0xa299._0x8545:Notify("Quest", "Lava Snake quest completed", 3, "check")
         
-    elseif _0xa299._0x8434 == "Samurai" then
-        local args = {"StartQuest", "Samurai's Retribution", 2}
-        RS:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer(unpack(args))
-        task.wait(1)
-        local progressArgs = {"GetQuestProgress", "Samurai's Retribution"}
-        RS:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer(unpack(progressArgs))
-        _0xa299._0x8545:Notify("Quest", "Samurai quest completed", 3, "check")
+    -- DISABLED 2026-10-22 at the user's request: the Samurai quest
+    -- ("Samurai's Retribution") is commented out along with Lava Snake and the
+    -- Unwipe feature, which is the only other thing that used it.
+--     elseif _0xa299._0x8434 == "Samurai" then
+--         local args = {"StartQuest", "Samurai's Retribution", 2}
+--         RS:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer(unpack(args))
+--         task.wait(1)
+--         local progressArgs = {"GetQuestProgress", "Samurai's Retribution"}
+--         RS:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer(unpack(progressArgs))
+--         _0xa299._0x8545:Notify("Quest", "Samurai quest completed", 3, "check")
         
     elseif _0xa299._0x8434 == "Combat Instructor" then
         local questStartPos = plr.Character.HumanoidRootPart.CFrame
@@ -41324,6 +41811,50 @@ function _0xa299._0x9b94()
     _0xa299._0x8434_cooldown = tick() + 4
 end
 
+---------------------------------------------------------------------
+-- QUEST RUNNER WRAPPER
+--
+-- Every quest goes through here, which makes it the one place that can
+-- guarantee the farm animation is handed back to the game.
+--
+-- Five mission-board quests (Corrupted Point, Bandit Camp, Boss Mission,
+-- Manda Mission, Cratos) start it with _0xa299._0xFarmAnim() - which installs
+-- the suppression hook that kills the game's own animations - and then only
+-- ever call `track:Stop()`. Stopping the track does NOT remove the hook, so
+-- every animation stayed suppressed after the quest finished. That is the
+-- "it just breaks them".
+--
+-- Worse, each of those quests has several early `return` paths - player
+-- nearby, boss not found, chakra sense - that skip even the track stop, so
+-- the leak did not need the quest to fail in an unusual way.
+--
+-- Counted across the file: 12 places start the animation and only 2 ever tore
+-- it down properly. Rather than patch ~15 teardown points across five near
+-- copies, it happens here, after the quest returns by ANY route.
+--
+-- _0xFarmAnimStop is the full undo, and the order matters: it removes the
+-- hook FIRST (or it keeps killing animations), then stops our tracks, then
+-- nudges the Humanoid - the game's animate script only re-plays on a state
+-- change, so without the nudge you stand there with no animation at all.
+--
+-- The error is re-raised so _0xAutoProgExecuteQuest still sees and reports a
+-- failing quest exactly as before.
+---------------------------------------------------------------------
+function _0xa299._0x9b94()
+    local ok, err = pcall(_0xa299._0x9b94Run)
+
+    -- Only tear down if the quest actually started it. _0xFarmAnimStop is
+    -- safe to call blind, but it ends with hum:ChangeState(Landed) to make
+    -- the animate script re-evaluate, and there is no reason to fire that
+    -- after a quest that never touched animations.
+    local st = _0xa299._0xFarmAnimState
+    if st and (st.active or st.suppress or st.track) then
+        pcall(function() _0xa299._0xFarmAnimStop() end)
+    end
+
+    if not ok then error(err, 0) end
+end
+
 _0xa299._0xba52:AddDropdown("Quest", _0xa299._0x8d2d, _0xa299._0x8d2d[1], function(Value)
     _0xa299._0x8434 = Value
     _0xa299._0x8545:Notify("Farm", "Quest selected: " .. Value, 2, "info")
@@ -41420,12 +41951,21 @@ end)
 
 _0xa299._0xab80:AddDivider()
 
+-- The key only gates AIMING; the feature itself is the Combat toggle. With no
+-- key bound it aims whenever the toggle is on.
 _0xa299._0xab80:AddKeybind("SilentAimKeybind", nil, function(Key)
     _0xa299._0x5ab3.silentAimKey = Key
+    if _0xa299._0xSilentAimModeChanged then
+        _0xa299._0xSilentAimModeChanged()
+    end
 end)
 
 _0xa299._0xab80:AddDropdown("Silent Aim Mode", {"Toggle", "Hold"}, "Toggle", function(Value)
     _0xa299._0x5ab3.silentAimMode = Value
+    -- Either mode starts with aiming off, so a mode swap cannot leave it stuck on
+    if _0xa299._0xSilentAimModeChanged then
+        _0xa299._0xSilentAimModeChanged()
+    end
 end)
 
 -- Setup keybind input handler (all variables are now defined)
@@ -41457,49 +41997,23 @@ function _0xa299._0xa319()
             end
         end
         
-        -- Silent Aim keybind
+        -- Silent Aim keybind. The key does NOT install or tear down the hook
+        -- any more - it only gates whether the per-frame scan caches a target,
+        -- so pressing it costs nothing either way.
         if _0xa299._0x5ab3.silentAimKey and input.KeyCode == _0xa299._0x5ab3.silentAimKey then
-            if _0xa299._0x5ab3.silentAimMode == "Toggle" then
-                -- Toggle: flip silent aim on/off
-                local newState = not _0xa299._0xSilentAim.enabled
-                _0xa299._0xSilentAim.enabled = newState
-                if newState then
-                    _0xa299._0xStartSilentAim()
-                    if not _0xa299._0xSilentAim.connections.fovLoop then
-                        _0xa299._0xSilentAim.connections.fovLoop = _0xa299._0x64b8.RenderStepped:Connect(function()
-                            _0xa299._0xUpdateFovCircle()
-                        end)
-                    end
-                else
-                    _0xa299._0xStopSilentAim()
-                    if _0xa299._0xSilentAim.fovCircle then
-                        _0xa299._0xSilentAim.fovCircle.Visible = false
-                    end
-                end
-            elseif _0xa299._0x5ab3.silentAimMode == "Hold" then
-                -- Hold: enable on press
-                _0xa299._0xSilentAim.enabled = true
-                _0xa299._0xStartSilentAim()
-                if not _0xa299._0xSilentAim.connections.fovLoop then
-                    _0xa299._0xSilentAim.connections.fovLoop = _0xa299._0x64b8.RenderStepped:Connect(function()
-                        _0xa299._0xUpdateFovCircle()
-                    end)
-                end
+            if _0xa299._0xSilentAimKeyDown then
+                _0xa299._0xSilentAimKeyDown()
             end
         end
     end)
-    
+
     -- InputEnded for Hold mode (Silent Aim)
     _0xa299._0x5ab3._inputEndedConn = _0xa299._0xb9e0.InputEnded:Connect(function(input, gameProcessed)
         if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
-        
+
         if _0xa299._0x5ab3.silentAimKey and input.KeyCode == _0xa299._0x5ab3.silentAimKey then
-            if _0xa299._0x5ab3.silentAimMode == "Hold" and _0xa299._0xSilentAim.enabled then
-                _0xa299._0xSilentAim.enabled = false
-                _0xa299._0xStopSilentAim()
-                if _0xa299._0xSilentAim.fovCircle then
-                    _0xa299._0xSilentAim.fovCircle.Visible = false
-                end
+            if _0xa299._0xSilentAimKeyUp then
+                _0xa299._0xSilentAimKeyUp()
             end
         end
     end)
