@@ -9340,6 +9340,195 @@ do
 end
 
 ---------------------------------------------------------------------
+-- INSTANT KUNAI (Kunai Throw + Multi Kunai Throw)
+--
+-- Ported from the private build. The throw itself is server-side, but the
+-- kunai it spawns is NOT locked to the server: it lands in workspace.Debris
+-- unanchored and ~0.1-0.2s later (end of wind-up) gets a BodyVelocity named
+-- "DirectionalBV" at 250 studs/s plus a TouchInterest. The server never calls
+-- SetNetworkOwner(nil) on it, so Roblox hands physics ownership to the nearest
+-- player - the thrower - and the server's Touched handler on the kunai trusts
+-- the touches our client produces. (Live-verified in the private build:
+-- isnetworkowner() flips true at the BV, and redirected kunais land their
+-- normal damage.)
+--
+-- So once we own it, we drive it through the target: park it 3 studs in front
+-- with its own BodyVelocity pointed at them, so one physics step sweeps it
+-- through the body as a genuine physical hit; then next frame sit it inside
+-- them and fire the touch directly as well. Either landing is enough - the
+-- server counts one hit per kunai.
+--
+-- AFTER THOSE TWO FRAMES WE NEVER WRITE TO IT AGAIN. On impact the server
+-- welds a hit kunai into the target, and anything written to it after that
+-- weld reaches us drags their whole character across our screen until
+-- replication snaps them back - a client-side fling. The weld needs a full
+-- round trip to arrive, so the strike is deliberately two frames and the
+-- second write is still gated on the kunai being a free, unjointed part we
+-- own.
+--
+-- This removes the flight time, not the server's rules: blocking and hit
+-- i-frames still apply.
+--
+-- Only kunais we OWN that SPAWNED within 12 studs of us are touched, so
+-- someone else's kunai passing by - which can auto-transfer ownership to us -
+-- is never hijacked. Nothing is attached to our own HRP.
+--
+-- Targeting is Silent Aim's picker, so it inherits FOV / 360 / whitelist /
+-- team check / visible check / ignore-knocked, but with its own range. No
+-- target means the kunai simply flies normally.
+---------------------------------------------------------------------
+_0xa299._0xKunai = {
+    enabled = false,
+    maxRange = 250,     -- studs; only targets this close get an instant kunai
+    conn = nil,
+    nearSpawn = 12,     -- how close a kunai must spawn to count as ours
+    speed = 250,        -- matches the game's own DirectionalBV
+}
+
+-- Wait for physics ownership to land on us. It flips at the moment the server
+-- adds the BodyVelocity, so this is a short poll rather than a fixed sleep.
+function _0xa299._0xKunaiWaitOwned(part)
+    local t0 = os.clock()
+    while part.Parent and (os.clock() - t0) < 1 do
+        local ok, own = pcall(isnetworkowner, part)
+        if ok and own then return true end
+        _0xa299._0x64b8.Heartbeat:Wait()
+    end
+    return false
+end
+
+function _0xa299._0xKunaiStrike(part)
+    if not _0xa299._0xKunaiWaitOwned(part) then return end
+    if not _0xa299._0xKunai.enabled then return end
+
+    -- Silent Aim's picker with our own range, so both features agree on what
+    -- counts as a valid target.
+    local hrp = _0xa299._0xSilentAimPick and _0xa299._0xSilentAimPick(_0xa299._0xKunai.maxRange)
+    if not hrp or not hrp.Parent then return end
+
+    local hitPart = hrp.Parent:FindFirstChild("Torso") or hrp
+    local bv = part:FindFirstChild("DirectionalBV")
+    local home = part.Parent
+    local speed = _0xa299._0xKunai.speed
+
+    -- Is the kunai still a free part we own, in the place it started? Once the
+    -- server welds it into the target this goes false, which is what stops the
+    -- second write from flinging them.
+    local function free()
+        if part.Parent ~= home or not hitPart.Parent then return false end
+        if part.AssemblyRootPart ~= part then return false end
+        local ok, own = pcall(isnetworkowner, part)
+        return ok and own
+    end
+
+    local tp = hitPart.Position
+    local off = tp - part.Position
+    local dir = off.Magnitude > 0.01 and off.Unit or hitPart.CFrame.LookVector
+
+    -- Frame 1: park 3 studs in front, aimed straight in, and let one physics
+    -- step sweep it through the body.
+    part.CFrame = CFrame.lookAt(tp - dir * 3, tp)
+    if bv then bv.Velocity = dir * speed end
+    part.AssemblyLinearVelocity = dir * speed
+    _0xa299._0x64b8.Heartbeat:Wait()
+
+    -- Frame 2: sit it inside them and fire the touch directly as well. Its own
+    -- BodyVelocity carries it out the far side afterwards.
+    if not free() then return end
+    local tp2 = hitPart.Position
+    part.CFrame = CFrame.lookAt(tp2, tp2 + dir)
+    pcall(firetouchinterest, part, hitPart, 0)
+    pcall(firetouchinterest, part, hitPart, 1)
+end
+
+-- Our weapon name, re-read at most once a second rather than per Debris part:
+-- combat floods Debris with effect parts and this would otherwise be a
+-- Settings lookup for every one of them.
+_0xa299._0xKunaiWeapon = nil
+_0xa299._0xKunaiWeaponAt = -math.huge
+
+function _0xa299._0xKunaiCurrentWeapon()
+    local now = os.clock()
+    if (now - _0xa299._0xKunaiWeaponAt) > 1 then
+        _0xa299._0xKunaiWeaponAt = now
+        _0xa299._0xKunaiWeapon = nil
+        local ps = _0xa299._0xDestroySettings(_0xa299._0x396d.Name)
+        local cw = ps and ps:FindFirstChild("CurrentWeapon")
+        if cw and cw.Value ~= "" then _0xa299._0xKunaiWeapon = cw.Value end
+    end
+    return _0xa299._0xKunaiWeapon
+end
+
+-- The thrown part is named after the weapon ("Raijin Kunai"), plus
+-- SmallKunai2/3 for Multi Kunai Throw. Nutcracker Raijin and the Daggers are
+-- kunai-type weapons whose names do not contain "kunai", so those are matched
+-- too - and finally anything named exactly like our equipped weapon.
+function _0xa299._0xKunaiIsThrown(d)
+    local n = d.Name:lower()
+    if n:find("kunai", 1, true) or n:find("dagger", 1, true) or n:find("raijin", 1, true) then
+        return true
+    end
+    local weapon = _0xa299._0xKunaiCurrentWeapon()
+    return weapon ~= nil and d.Name == weapon
+end
+
+-- Cheapest rejects first: type, then distance (most Debris effects spawn
+-- nowhere near us), and only then the name checks.
+function _0xa299._0xKunaiOnDebris(d)
+    if not _0xa299._0xKunai.enabled then return end
+    if not d:IsA("BasePart") then return end
+
+    local char = _0xa299._0x396d.Character
+    local myRoot = char and char:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return end
+    if (d.Position - myRoot.Position).Magnitude > _0xa299._0xKunai.nearSpawn then return end
+
+    if not _0xa299._0xKunaiIsThrown(d) then return end
+    task.spawn(_0xa299._0xKunaiStrike, d)
+end
+
+do
+    local t = _0xa299._0xSAIM:AddToggle("Instant Kunai", false, function(Value)
+        _0xa299._0xKunai.enabled = Value
+
+        if Value then
+            -- Both are required: ownership has to be readable and the touch
+            -- has to be fireable. Without them this cannot work at all, so it
+            -- says so rather than silently doing nothing.
+            if not (isnetworkowner and firetouchinterest) then
+                _0xa299._0xKunai.enabled = false
+                _0xa299._0x8545:Notify("Combat",
+                    "Your executor is missing isnetworkowner / firetouchinterest", 6, "warning")
+                return
+            end
+
+            local debris = workspace:FindFirstChild("Debris")
+                or workspace:WaitForChild("Debris", 10)
+            if not debris then
+                _0xa299._0xKunai.enabled = false
+                _0xa299._0x8545:Notify("Combat", "Could not find workspace.Debris", 6, "warning")
+                return
+            end
+
+            if not _0xa299._0xKunai.conn then
+                _0xa299._0xKunai.conn = debris.ChildAdded:Connect(_0xa299._0xKunaiOnDebris)
+            end
+            _0xa299._0x8545:Notify("Combat", "Instant Kunai enabled", 3, "check")
+        else
+            if _0xa299._0xKunai.conn then
+                _0xa299._0xKunai.conn:Disconnect()
+                _0xa299._0xKunai.conn = nil
+            end
+            _0xa299._0x8545:Notify("Combat", "Instant Kunai disabled", 3, "info")
+        end
+    end, {Flag = "InstantKunai", Type = "info", Text = "Your kunai hits instantly instead of flying"})
+
+    t:AddSettings("Instant Kunai"):AddSlider("Kunai Max Distance", 10, 1000, 250, function(Value)
+        _0xa299._0xKunai.maxRange = Value
+    end)
+end
+
+---------------------------------------------------------------------
 -- AUTO PICKUP ITEMS
 ---------------------------------------------------------------------
 _0xa299._0x6da7 = {
