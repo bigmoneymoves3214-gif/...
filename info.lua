@@ -17701,6 +17701,65 @@ _0xa299._0xHopMaxTries = 15
 -- Was hardcoded at 12; 1 means an almost-empty server is a valid target.
 _0xa299._0xHopLowestMin = 1
 
+---------------------------------------------------------------------
+-- WHY A HOP USED TO SIT THERE FOR SECONDS DOING NOTHING
+--
+-- _0xHop returning true only means the ServerTeleport invoke came back
+-- without erroring. It does NOT mean a teleport is happening - the server can
+-- accept the call and then decline to move us, most often because the target
+-- filled up between the API snapshot and the attempt.
+--
+-- Both hop loops then sat in a blind `for _ = 1, 25 do task.wait(0.2) end`,
+-- so every one of those dead attempts cost a full 5 seconds before trying the
+-- next server. That is the "it says Hopping to server... and nothing happens"
+-- wait.
+--
+-- Roblox already tells us: TeleportInitFailed fires, and Player.OnTeleport
+-- reports Enum.TeleportState.Failed. Nothing was listening to either, so a
+-- known-dead attempt still burned the whole timer. Now a reported failure
+-- moves to the next candidate immediately, and the blind ceiling is 2s rather
+-- than 5 - a real teleport yanks the client almost at once, so if two seconds
+-- pass with no movement and no failure event, it was not coming.
+---------------------------------------------------------------------
+_0xa299._0xHopSettle = 2      -- seconds to give a teleport before giving up on it
+_0xa299._0xHopRetryGap = 0.05 -- pause after a refusal before the next candidate
+
+-- Watch one attempt. Returns "moved" (we are leaving - stop everything),
+-- "failed" (Roblox reported it dead - try the next one now) or "quiet"
+-- (nothing happened in time).
+function _0xa299._0xHopWatch(originalJobId)
+    local failed = false
+    local conns = {}
+
+    pcall(function()
+        table.insert(conns, _0xa299._0xf4db.TeleportInitFailed:Connect(function()
+            failed = true
+        end))
+        table.insert(conns, _0xa299._0x396d.OnTeleport:Connect(function(state)
+            if state == Enum.TeleportState.Failed then failed = true end
+        end))
+    end)
+
+    local verdict = "quiet"
+    local deadline = tick() + _0xa299._0xHopSettle
+    while tick() < deadline do
+        if game.JobId ~= originalJobId or not _0xa299._0x396d.Parent then
+            verdict = "moved"
+            break
+        end
+        if failed then
+            verdict = "failed"
+            break
+        end
+        task.wait(0.05)
+    end
+
+    for _, c in ipairs(conns) do
+        pcall(function() c:Disconnect() end)
+    end
+    return verdict
+end
+
 -- Block until we are out of combat. The hop remote is refused while
 -- _G.Data.InDanger, so both hop paths wait this out rather than being the
 -- only client that hops mid-fight. Shared because it was a local inside the
@@ -17798,8 +17857,15 @@ end
 -- Shared by the plain hop and the hop-to-lowest, which both need the same
 -- API-counts-joined-to-in-game-regions treatment. Returns the list plus a
 -- note when the region filter had to be dropped.
+-- How much room a server must have to be worth attempting. The API result is
+-- a snapshot: a server sitting at 19/20 when it was fetched is very likely
+-- full by the time we get to it, and that is precisely the attempt that gets
+-- accepted and then silently never teleports us. Asking for a couple of free
+-- slots costs a few candidates out of 400 and buys far fewer dead attempts.
+_0xa299._0xHopRoomNeeded = 3
+
 function _0xa299._0xHopCandidates(filter)
-    local candidates = _0xa299._0xSLApiServers(1, 4)
+    local candidates = _0xa299._0xSLApiServers(_0xa299._0xHopRoomNeeded, 4)
 
     if #candidates == 0 then
         -- API unreachable (no HTTP, rate limited): the in-game list is worse
@@ -22004,13 +22070,14 @@ function _0xa299._0xb5ef()
         local ok, why = _0xa299._0xHop(pick.JobId)
 
         if ok then
-            -- Wait out the teleport; bail the moment we are actually moving.
-            for _ = 1, 25 do
-                task.wait(0.2)
-                if game.JobId ~= originalJobId or not _0xa299._0x396d.Parent then return end
+            local verdict = _0xa299._0xHopWatch(originalJobId)
+            if verdict == "moved" then return end
+            -- "failed" got here the instant Roblox said so; "quiet" after the
+            -- 2s ceiling. Either way the next candidate is tried immediately.
+            if refused <= 2 then
+                _0xa299._0x8545:Notify("Server",
+                    ("Server %d/%d did not take, trying another"):format(i, tries), 1, "warning")
             end
-            _0xa299._0x8545:Notify("Server",
-                ("Server %d/%d did not accept, trying another"):format(i, tries), 2, "warning")
         else
             refused = refused + 1
             -- Combat can start mid-hop; that is worth waiting out rather than
@@ -22023,7 +22090,7 @@ function _0xa299._0xb5ef()
                 _0xa299._0x8545:Notify("Server",
                     ("Server %d refused (%s) - trying another"):format(i, tostring(why)), 2, "warning")
             end
-            task.wait(0.2)
+            task.wait(_0xa299._0xHopRetryGap)
         end
     end
 
@@ -22643,15 +22710,14 @@ _0xa299._0xLWSF = function()
         local pick = validServers[i]
         _0xa299._0xLWSH[pick.JobId] = true
 
+        -- Short notify: attempts now cycle in ~2s, so a 2s toast per attempt
+        -- would just queue up behind itself.
         _0xa299._0x8545:Notify("Server",
-            ("Hopping to server with %d/%s players..."):format(pick.Count, tostring(pick.Max or "?")), 2, "info")
+            ("Hopping to server with %d/%s players..."):format(pick.Count, tostring(pick.Max or "?")), 1, "info")
 
         local ok, why = _0xa299._0xHop(pick.JobId)
         if ok then
-            for _ = 1, 25 do
-                task.wait(0.2)
-                if game.JobId ~= originalJobId or not _0xa299._0x396d.Parent then return end
-            end
+            if _0xa299._0xHopWatch(originalJobId) == "moved" then return end
         else
             refused = refused + 1
             if tostring(why):find("InDanger", 1, true) then
@@ -22661,7 +22727,7 @@ _0xa299._0xLWSF = function()
                 _0xa299._0x8545:Notify("Server",
                     ("Server %d refused (%s) - trying the next lowest"):format(i, tostring(why)), 2, "warning")
             end
-            task.wait(0.2)
+            task.wait(_0xa299._0xHopRetryGap)
         end
     end
 
@@ -30675,11 +30741,21 @@ _0xa299._0xSweepAt = 0
 ---------------------------------------------------------------------
 _0xa299._0xArenaRevisit = 20   -- seconds before walking to the same arena again
 
--- Bosses the farm spawns itself; those already travel to their spawn point.
+-- Bosses the farm spawns itself by firing an activate event. THE one list -
+-- every check below reads it, because this was previously spelled out as an
+-- "or" chain in three separate places plus an array, and re-enabling Lava
+-- Snake and The Ringed Samurai updated the array but not the chains, so those
+-- two were never actually reaching the spawn branch.
+--
+-- These do not need the streaming sweep or the travel fallback: an unspawned
+-- boss does not exist anywhere, so pulling its arena in cannot reveal it. The
+-- farm goes to spawnPosition and fires the event instead.
 _0xa299._0xSpawnableBosses = {
     ["Lava Rosa"] = true,
     ["Manda"] = true,
     ["Barbarit The Rose"] = true,
+    ["Lava Snake"] = true,
+    ["The Ringed Samurai"] = true,
 }
 
 function _0xa299._0xVisitArena(bossName, config)
@@ -30727,7 +30803,11 @@ function _0xa299._0xStreamAllBosses(force)
 
     for _, bossName in ipairs(_0xa299._0x1915.selectedBosses or {}) do
         local cfg = _0xa299._0x5ecb[bossName]
-        if cfg and not _0xa299._0xBossPresent(cfg) then
+        -- Skip the ones we spawn. Streaming the arena of a boss that has not
+        -- been spawned yet cannot make it appear - it does not exist - so this
+        -- was a wasted stream request every 5s per selected spawnable boss.
+        if cfg and not _0xa299._0xSpawnableBosses[bossName]
+           and not _0xa299._0xBossPresent(cfg) then
             local anchor = cfg.streamPos or cfg.rewardspos or cfg.spawnPosition
             if anchor then
                 pcall(function()
@@ -32038,12 +32118,6 @@ _0xa299._0x5ecb = {
         offset = 14,
         spawnPosition = CFrame.new(4585.87695, 18.7208252, -10093.8076,
             -1, 0, 0, 0, 1, 0, 0, 0, -1),
-        -- Explicit, because the streaming sweep's anchor order is
-        -- streamPos > rewardspos > spawnPosition, and this boss's reward spot
-        -- is ~3900 studs from its arena - so without this it would stream in
-        -- the loot area and still not find the boss. Matatabi and Gaara set
-        -- streamPos for the same reason.
-        streamPos = CFrame.new(4585.87695, 18.7208252, -10093.8076),
         rewards = "SamuraiRwards",
         rewardspos = CFrame.new(1605.68433, -487.562805, -7094.30664,
             0, 0, -1, 0, 1, 0, 1, 0, 0),
@@ -32148,7 +32222,8 @@ function _0xa299._0xe54e()
 
     -- Track which spawnable bosses have players nearby (for skipping)
     local spawnableBossesWithPlayers = {}
-    local spawnableBosses = {"Lava Rosa", "Manda", "Barbarit The Rose", "Lava Snake", "The Ringed Samurai"}
+    local spawnableBosses = {}
+    for name in pairs(_0xa299._0xSpawnableBosses) do spawnableBosses[#spawnableBosses + 1] = name end
 
     -- Clean up expired skipped bosses (30 second timeout)
     local currentTime = tick()
@@ -32168,7 +32243,7 @@ function _0xa299._0xe54e()
         local config = _0xa299._0x5ecb[bossName]
         if config then
             -- FIRST: Special handling for spawnable bosses - teleport to spawn location first
-            if bossName == "Lava Rosa" or bossName == "Manda" or bossName == "Barbarit The Rose" then
+            if _0xa299._0xSpawnableBosses[bossName] then
                 -- Track spawn attempts per boss
                 _0xa299._0x1915.spawnAttempts = _0xa299._0x1915.spawnAttempts or {}
                 _0xa299._0x1915.spawnTimes = _0xa299._0x1915.spawnTimes or {}
@@ -32367,7 +32442,7 @@ function _0xa299._0xe54e()
     if _0xa299._0x220a.enabled then
         local selectedSpawnableBosses = {}
         for _, bossName in ipairs(_0xa299._0x1915.selectedBosses) do
-            if bossName == "Lava Rosa" or bossName == "Manda" or bossName == "Barbarit The Rose" then
+            if _0xa299._0xSpawnableBosses[bossName] then
                 table.insert(selectedSpawnableBosses, bossName)
             end
         end
