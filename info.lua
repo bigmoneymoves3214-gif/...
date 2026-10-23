@@ -3327,7 +3327,7 @@ _0xa299._0xa6f6 = {
     noLavaDamage = false,
     infiniteStamina = false,
     noVisualEffects = false,
-    buffChakraRegen = false,
+    buffChakraRegen = false,   -- dead: Buff Chakra Regen disabled 2026-10-22 (detected)
     antiVoid = false,
     removeBlindness = false,
     infiniteChakraCharge = false,
@@ -3450,98 +3450,107 @@ _0xa299._0x4b83:AddToggle("Infinite Stamina", false, function(Value)
     _0xa299._0x8545:Notify("Player", "Infinite Stamina " .. (Value and "enabled" or "disabled"), 3, Value and "check" or "info")
 end)
 
----------------------------------------------------------------------
--- BUFF CHAKRA REGEN
----------------------------------------------------------------------
-_0xa299._0x22b7 = nil
-_0xa299._0x3662 = nil
-_0xa299._0x1b76 = 3
-
-function _0xa299._0xd091()
-    local buffingchakra = _0xa299._0xa6f6.buffChakraRegen
-    
-    if buffingchakra then
-        local function buffchakra()
-            local cooldown = false
-            local chakra = _0xa299._0x396d.Backpack:FindFirstChild("chakra")
-            if not chakra then return end
-            local startval = chakra.Value
-            
-            _0xa299._0x22b7 = chakra.Changed:Connect(function(newval)
-                if newval > startval then
-                    if cooldown == true then
-                        return
-                    end
-                    
-                    cooldown = true
-                    
-                    local newchakra = chakra.Value + _0xa299._0x1b76
-                
-                    if newchakra < _0xa299._0x396d.Backpack.maxChakra.Value then
-                        local args = {
-                            [1] = "TakeChakra",
-                            [2] = _0xa299._0x1b76 * -1
-                        }
-                        
-                        _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataEvent"):FireServer(unpack(args))
-                        chakra.Value = chakra.Value + _0xa299._0x1b76
-                    end
-
-                    startval = newval
-
-                    task.wait(0.9)
-                    cooldown = false
-
-                elseif startval > newval then
-                    startval = newval
-                end
-            end)
-        end
-
-        buffchakra()
-
-        _0xa299._0x3662 = _0xa299._0x396d.CharacterAdded:Connect(function()
-            if _0xa299._0x22b7 then
-                _0xa299._0x22b7:Disconnect()
-            end
-            task.wait(1.3)
-            buffchakra()
-        end)
-    else
-        if _0xa299._0x22b7 then
-            _0xa299._0x22b7:Disconnect()
-            _0xa299._0x22b7 = nil
-        end
-        if _0xa299._0x3662 then
-            _0xa299._0x3662:Disconnect()
-            _0xa299._0x3662 = nil
-        end
-    end
-end
-
-_0xa299._0xBuffChakraToggle = _0xa299._0x4470:AddToggle("Buff Chakra Regen", false, function(Value)
-    _0xa299._0xa6f6.buffChakraRegen = Value
-    _0xa299._0xd091()
-    
-    if Value then
-        task.spawn(function()
-            while _0xa299._0xa6f6.buffChakraRegen do
-                pcall(function()
-                    local RS = _0xa299._0xe08d
-                    if RS.Settings:FindFirstChild(_0xa299._0x396d.Name) then
-                        local chakraRegen = RS.Settings[_0xa299._0x396d.Name]:FindFirstChild("ChakraRegen")
-                        if chakraRegen and chakraRegen.Value < 999 then
-                            chakraRegen.Value = 999
-                        end
-                    end
-                end)
-                task.wait(0.1)
-            end
-        end)
-    end
-    
-    _0xa299._0x8545:Notify("Player", "Buff Chakra Regen " .. (Value and "enabled" or "disabled"), 3, Value and "check" or "info")
-end)
+-- DISABLED 2026-10-22 at the user's request: Buff Chakra Regen is DETECTED.
+--
+-- It fired TakeChakra with a NEGATIVE amount to hand itself chakra back, and
+-- separately wrote ChakraRegen = 999 into the replicated settings folder
+-- every 0.1s. Both are trivially server-visible. Left in place rather than
+-- deleted so it can be brought back if it is ever shown to be safe.
+--
+-- Also commented out with it: the Chakra Regen Amount slider that hung off
+-- its toggle, and the respawn re-apply in the character-added handler.
+-- ---------------------------------------------------------------------
+-- -- BUFF CHAKRA REGEN
+-- ---------------------------------------------------------------------
+-- _0xa299._0x22b7 = nil
+-- _0xa299._0x3662 = nil
+-- _0xa299._0x1b76 = 3
+--
+-- function _0xa299._0xd091()
+--     local buffingchakra = _0xa299._0xa6f6.buffChakraRegen
+--
+--     if buffingchakra then
+--         local function buffchakra()
+--             local cooldown = false
+--             local chakra = _0xa299._0x396d.Backpack:FindFirstChild("chakra")
+--             if not chakra then return end
+--             local startval = chakra.Value
+--
+--             _0xa299._0x22b7 = chakra.Changed:Connect(function(newval)
+--                 if newval > startval then
+--                     if cooldown == true then
+--                         return
+--                     end
+--
+--                     cooldown = true
+--
+--                     local newchakra = chakra.Value + _0xa299._0x1b76
+--
+--                     if newchakra < _0xa299._0x396d.Backpack.maxChakra.Value then
+--                         local args = {
+--                             [1] = "TakeChakra",
+--                             [2] = _0xa299._0x1b76 * -1
+--                         }
+--
+--                         _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataEvent"):FireServer(unpack(args))
+--                         chakra.Value = chakra.Value + _0xa299._0x1b76
+--                     end
+--
+--                     startval = newval
+--
+--                     task.wait(0.9)
+--                     cooldown = false
+--
+--                 elseif startval > newval then
+--                     startval = newval
+--                 end
+--             end)
+--         end
+--
+--         buffchakra()
+--
+--         _0xa299._0x3662 = _0xa299._0x396d.CharacterAdded:Connect(function()
+--             if _0xa299._0x22b7 then
+--                 _0xa299._0x22b7:Disconnect()
+--             end
+--             task.wait(1.3)
+--             buffchakra()
+--         end)
+--     else
+--         if _0xa299._0x22b7 then
+--             _0xa299._0x22b7:Disconnect()
+--             _0xa299._0x22b7 = nil
+--         end
+--         if _0xa299._0x3662 then
+--             _0xa299._0x3662:Disconnect()
+--             _0xa299._0x3662 = nil
+--         end
+--     end
+-- end
+--
+-- _0xa299._0xBuffChakraToggle = _0xa299._0x4470:AddToggle("Buff Chakra Regen", false, function(Value)
+--     _0xa299._0xa6f6.buffChakraRegen = Value
+--     _0xa299._0xd091()
+--
+--     if Value then
+--         task.spawn(function()
+--             while _0xa299._0xa6f6.buffChakraRegen do
+--                 pcall(function()
+--                     local RS = _0xa299._0xe08d
+--                     if RS.Settings:FindFirstChild(_0xa299._0x396d.Name) then
+--                         local chakraRegen = RS.Settings[_0xa299._0x396d.Name]:FindFirstChild("ChakraRegen")
+--                         if chakraRegen and chakraRegen.Value < 999 then
+--                             chakraRegen.Value = 999
+--                         end
+--                     end
+--                 end)
+--                 task.wait(0.1)
+--             end
+--         end)
+--     end
+--
+--     _0xa299._0x8545:Notify("Player", "Buff Chakra Regen " .. (Value and "enabled" or "disabled"), 3, Value and "check" or "info")
+-- end)
 
 ---------------------------------------------------------------------
 -- NO VISUAL EFFECTS
@@ -10945,9 +10954,11 @@ _0xa299._0xAntiDieToggle:AddSettings("Anti Die"):AddInput("Panic HP", "100", fun
     end
 end)
 
-_0xa299._0xBuffChakraToggle:AddSettings("Chakra Regen"):AddSlider("Chakra Regen Amount", 1, 6, 3, function(Value)
-    _0xa299._0x1b76 = Value
-end)
+-- DISABLED 2026-10-22 with Buff Chakra Regen (detected). The toggle this hung
+-- off no longer exists, so this would be a nil index on load.
+-- _0xa299._0xBuffChakraToggle:AddSettings("Chakra Regen"):AddSlider("Chakra Regen Amount", 1, 6, 3, function(Value)
+--     _0xa299._0x1b76 = Value
+-- end)
 
 _0xa299._0x26cc.settings:AddSlider("Hitbox Size", 5, 60, 8, function(Value)
     _0xa299._0x26cc.size = Value
@@ -43397,10 +43408,12 @@ task.delay(1, function()
             _0xa299._0xbc30 = _0xa299._0x64b8.Heartbeat:Connect(_0xa299._0x6d1a)
         end
         
-        -- Buff Chakra Regen
-        if _0xa299._0xa6f6.buffChakraRegen then
-            _0xa299._0xd091()
-        end
+        -- DISABLED 2026-10-22 with Buff Chakra Regen (detected). _0xd091 is
+        -- commented out, so calling it here would error on every respawn.
+        -- -- Buff Chakra Regen
+        -- if _0xa299._0xa6f6.buffChakraRegen then
+        --     _0xa299._0xd091()
+        -- end
         
         -- Infinite Chakra Charge
         if _0xa299._0xa6f6.infiniteChakraCharge and not _0xa299._0xChakraChargeConn then
