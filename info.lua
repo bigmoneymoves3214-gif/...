@@ -14742,21 +14742,26 @@ _0xa299._0x22ce = {
     showDistance = true,
     showHealth = true,
     showHealthBar = true,
-    showBoxes = false,
+    showBoxes = true,            -- PRIVATE default
     showTracers = false,
+    showHighlight = false,       -- new: Mob ESP had no highlight at all
     showLovePoints = false,
     maxDistance = 500,
-    textSize = 16,
-    nameColor = Color3.fromRGB(255, 100, 100),
+    barRenderDistance = 150,     -- new: bars are clutter at range, as in player ESP
+    textSize = 13,               -- PRIVATE default
+    nameColor = Color3.fromRGB(255, 120, 120),
     distanceColor = Color3.fromRGB(200, 200, 200),
     healthColor = Color3.fromRGB(0, 255, 0),
     healthBarHighColor = Color3.fromRGB(0, 255, 0),
-    healthBarWidth = 4,
-    boxColor = Color3.fromRGB(255, 0, 0),
+    healthBarWidth = 3,          -- PRIVATE default
+    boxColor = Color3.fromRGB(255, 100, 100),
     boxThickness = 1,
-    tracerColor = Color3.fromRGB(255, 255, 0),
+    tracerColor = Color3.fromRGB(255, 100, 100),
     tracerThickness = 1,
     tracerOrigin = "Bottom",
+    highlightFill = Color3.fromRGB(255, 50, 50),
+    highlightOutline = Color3.fromRGB(255, 255, 255),
+    highlightTransparency = 0.65,
     -- Corrupted points get their own range: they are worth spotting from much
     -- further out than a regular mob, so they no longer share Mob Max Distance.
     pointMaxDistance = 500,
@@ -14769,6 +14774,35 @@ _0xa299._0x8fc8 = {}
 _0xa299._0x80c0 = nil
 _0xa299._0xf5b2 = {}
 _0xa299._0x22ce.mobConnections = {} -- Event connections for mob tracking
+
+---------------------------------------------------------------------
+-- MOB SIZE
+--
+-- PRIVATE measures each mob's actual bounding box instead of assuming every
+-- one is +/-3 studs tall like the old code did, so a big mob gets a big box
+-- and a small one a small box rather than all of them sharing one.
+--
+-- GetBoundingBox is not free and a mob's size does not change, so the result
+-- is cached for 5 seconds per model. The fallback is a human-ish 4x6x4.
+---------------------------------------------------------------------
+_0xa299._0xMobSizeCache = {}
+_0xa299._0xMobSizeAt = {}
+
+function _0xa299._0xMobSize(model)
+    local now = os.clock()
+    local last = _0xa299._0xMobSizeAt[model]
+    if last and (now - last) < 5 and _0xa299._0xMobSizeCache[model] then
+        return _0xa299._0xMobSizeCache[model]
+    end
+
+    local ok, _, size = pcall(model.GetBoundingBox, model)
+    if ok and size then
+        _0xa299._0xMobSizeCache[model] = size
+        _0xa299._0xMobSizeAt[model] = now
+        return size
+    end
+    return Vector3.new(4, 6, 4)
+end
 
 function _0xa299._0x5f13(mob)
     if _0xa299._0x8fc8[mob] then return end
@@ -14786,6 +14820,12 @@ end
 
 function _0xa299._0x8fad(mob)
     if _0xa299._0x8fc8[mob] then
+        -- The Highlight is a real Instance, not a Drawing, so the userdata
+        -- branch below would skip it and leak one per mob.
+        local hl = _0xa299._0x8fc8[mob].Highlight
+        if hl then pcall(function() hl:Destroy() end) end
+        _0xa299._0x8fc8[mob].Highlight = nil
+
         for key, drawing in pairs(_0xa299._0x8fc8[mob]) do
             if drawing and type(drawing) == "userdata" then
                 pcall(function()
@@ -14899,8 +14939,10 @@ function _0xa299._0x628a()
             continue
         end
 
-        local headPos, onScreen = _0xa299._0x2f65:WorldToViewportPoint(mobHrp.Position + Vector3.new(0, 2.5, 0))
-        local rootPos = _0xa299._0x2f65:WorldToViewportPoint(mobHrp.Position)
+        -- The head projection is gone: everything is anchored to the box now,
+        -- so only the root position and the on-screen test are needed, which
+        -- also saves a WorldToViewportPoint per mob per frame.
+        local rootPos, onScreen = _0xa299._0x2f65:WorldToViewportPoint(mobHrp.Position)
 
         if not onScreen then
             for _, drawing in pairs(data) do
@@ -14911,67 +14953,82 @@ function _0xa299._0x628a()
             continue
         end
 
-        local yOffset = 0
-        
-        -- Update Name Tag
+        -- BOX GEOMETRY, PRIVATE's version. Measured off the mob's real
+        -- bounding box rather than a flat +/-3 studs, so the box actually
+        -- varies per mob instead of every one sharing the same size. Width
+        -- takes the projected half-width of the model and keeps 0.55 * height
+        -- as a floor, so a wide mob gets a wide box and a thin one still reads
+        -- as a box rather than a line.
+        --
+        -- Computed ONCE here and shared by the bar, the box and the text. The
+        -- old code projected the same two points separately for the bar and
+        -- the box, and placed the bar from screenHeight/4 - which only lined
+        -- up with the box edge by coincidence.
+        local mobSize = _0xa299._0xMobSize(mob)
+        local halfY = mobSize.Y / 2
+        local halfX = math.max(mobSize.X, mobSize.Z) / 2
+        local topPos = _0xa299._0x2f65:WorldToViewportPoint(mobHrp.Position + Vector3.new(0, halfY, 0))
+        local bottomPos = _0xa299._0x2f65:WorldToViewportPoint(mobHrp.Position - Vector3.new(0, halfY, 0))
+        local edgePos = _0xa299._0x2f65:WorldToViewportPoint(mobHrp.Position + Vector3.new(halfX, 0, 0))
+        local boxH = math.abs(topPos.Y - bottomPos.Y)
+        local boxW = math.max(boxH * 0.55, math.abs(edgePos.X - rootPos.X) * 2)
+        local boxPos = Vector2.new(rootPos.X - boxW / 2, topPos.Y)
+        local boxSize = Vector2.new(boxW, boxH)
+        local healthPct = humanoid.Health / math.max(humanoid.MaxHealth, 1)
+
+        -- Name above the box, info stacked below it - the same split the player
+        -- ESP uses. This was one run downward from head + 2.5 studs in fixed
+        -- 18/16px steps, which drifted off the mob as the projection scaled.
         if _0xa299._0x22ce.showName and data.NameTag then
             data.NameTag.Visible = true
-            data.NameTag.Position = Vector2.new(headPos.X, headPos.Y + yOffset)
+            data.NameTag.Position = Vector2.new(rootPos.X, boxPos.Y - 2 - _0xa299._0x22ce.textSize)
             data.NameTag.Text = mob.Name
             data.NameTag.Size = _0xa299._0x22ce.textSize
             data.NameTag.Color = _0xa299._0x22ce.nameColor
-            yOffset = yOffset + 18
         elseif data.NameTag then
             data.NameTag.Visible = false
         end
 
-        -- Update Distance Tag
+        local infoY = boxPos.Y + boxSize.Y + 2
+
         if _0xa299._0x22ce.showDistance and data.DistanceTag then
             data.DistanceTag.Visible = true
-            data.DistanceTag.Position = Vector2.new(headPos.X, headPos.Y + yOffset)
-            data.DistanceTag.Text = string.format("%.0f studs", distance)
-            data.DistanceTag.Size = _0xa299._0x22ce.textSize - 2
+            data.DistanceTag.Position = Vector2.new(rootPos.X, infoY)
+            data.DistanceTag.Text = string.format("%d studs", math.floor(distance))
+            data.DistanceTag.Size = _0xa299._0x22ce.textSize - 1
             data.DistanceTag.Color = _0xa299._0x22ce.distanceColor
-            yOffset = yOffset + 16
+            infoY = infoY + _0xa299._0x22ce.textSize
         elseif data.DistanceTag then
             data.DistanceTag.Visible = false
         end
 
-        -- Update Health Tag
         if _0xa299._0x22ce.showHealth and data.HealthTag then
             data.HealthTag.Visible = true
-            data.HealthTag.Position = Vector2.new(headPos.X, headPos.Y + yOffset)
-            local healthPercent = humanoid.Health / humanoid.MaxHealth
-            data.HealthTag.Text = string.format("HP: %d/%d", math.floor(humanoid.Health), math.floor(humanoid.MaxHealth))
-            data.HealthTag.Color = _0xa299._0xRamp(_0xa299._0x22ce.healthColor, healthPercent)
-            data.HealthTag.Size = _0xa299._0x22ce.textSize - 2
+            data.HealthTag.Position = Vector2.new(rootPos.X, infoY)
+            data.HealthTag.Text = string.format("%d/%d HP", math.floor(humanoid.Health), math.floor(humanoid.MaxHealth))
+            data.HealthTag.Color = _0xa299._0xHealthColor(healthPct)
+            data.HealthTag.Size = _0xa299._0x22ce.textSize - 1
         elseif data.HealthTag then
             data.HealthTag.Visible = false
         end
-        
-        -- Update Health Bar
-        if _0xa299._0x22ce.showHealthBar and data.HealthBarOutline and data.HealthBarFill then
-            local health = humanoid.Health
-            local maxHealth = humanoid.MaxHealth
-            local healthPercent = health / maxHealth
-            
-            local topPos = _0xa299._0x2f65:WorldToViewportPoint((mobHrp.CFrame * CFrame.new(0, 3, 0)).Position)
-            local bottomPos = _0xa299._0x2f65:WorldToViewportPoint((mobHrp.CFrame * CFrame.new(0, -3, 0)).Position)
-            local screenHeight = math.abs(topPos.Y - bottomPos.Y)
-            local barHeight = screenHeight * 0.8
+
+        -- Health bar: full box height, top-aligned, hanging off the box's left
+        -- edge with a 4px gap, and only drawn close in.
+        if _0xa299._0x22ce.showHealthBar and data.HealthBarOutline and data.HealthBarFill
+           and distance <= _0xa299._0x22ce.barRenderDistance then
             local barWidth = _0xa299._0x22ce.healthBarWidth
-            local barX = rootPos.X - (screenHeight / 4) - barWidth - 2
-            local barY = topPos.Y + (screenHeight - barHeight) / 2
+            local barX = boxPos.X - barWidth - 4
+            local barY = boxPos.Y
 
             data.HealthBarOutline.Visible = true
-            data.HealthBarOutline.Size = Vector2.new(barWidth + 2, barHeight + 2)
+            data.HealthBarOutline.Size = Vector2.new(barWidth + 2, boxH + 2)
             data.HealthBarOutline.Position = Vector2.new(barX - 1, barY - 1)
 
             data.HealthBarFill.Visible = true
-            local fillHeight = math.max(1, barHeight * healthPercent)
+            local fillHeight = math.max(1, boxH * math.clamp(healthPct, 0, 1))
             data.HealthBarFill.Size = Vector2.new(barWidth, fillHeight)
-            data.HealthBarFill.Position = Vector2.new(barX, barY + (barHeight - fillHeight))
-            data.HealthBarFill.Color = _0xa299._0xRamp(_0xa299._0x22ce.healthBarHighColor, healthPercent)
+            data.HealthBarFill.Position = Vector2.new(barX, barY + (boxH - fillHeight))
+            data.HealthBarFill.Color = _0xa299._0xHealthColor(healthPct)
         else
             if data.HealthBarOutline then data.HealthBarOutline.Visible = false end
             if data.HealthBarFill then data.HealthBarFill.Visible = false end
@@ -14979,13 +15036,6 @@ function _0xa299._0x628a()
 
         -- Update Box ESP
         if _0xa299._0x22ce.showBoxes and data.Box and data.BoxOutline then
-            local topPos = _0xa299._0x2f65:WorldToViewportPoint((mobHrp.CFrame * CFrame.new(0, 3, 0)).Position)
-            local bottomPos = _0xa299._0x2f65:WorldToViewportPoint((mobHrp.CFrame * CFrame.new(0, -3, 0)).Position)
-            local height = math.abs(topPos.Y - bottomPos.Y)
-            local width = height / 2
-            local boxPos = Vector2.new(rootPos.X - width / 2, topPos.Y)
-            local boxSize = Vector2.new(width, height)
-
             data.BoxOutline.Visible = true
             data.BoxOutline.Position = boxPos
             data.BoxOutline.Size = boxSize
@@ -14999,6 +15049,39 @@ function _0xa299._0x628a()
         else
             if data.Box then data.Box.Visible = false end
             if data.BoxOutline then data.BoxOutline.Visible = false end
+        end
+
+        -- Highlight, created on demand. Adorned to the mob but parented OUT of
+        -- it (gethui, else CoreGui), which is what PRIVATE does: a descendant
+        -- scan of the model then finds nothing that is not the game's own. The
+        -- player ESP parents its highlights straight to the character, which
+        -- does not have that property - worth lining up one day.
+        if _0xa299._0x22ce.showHighlight then
+            if not data.Highlight then
+                pcall(function()
+                    local hl = Instance.new("Highlight")
+                    hl.Name = _0xa299._0x5f86:GenerateGUID(false)
+                    hl.Adornee = mob
+                    hl.OutlineTransparency = 0
+
+                    local host
+                    if gethui then
+                        local ok, hui = pcall(gethui)
+                        if ok then host = hui end
+                    end
+                    hl.Parent = host or game:GetService("CoreGui")
+                    data.Highlight = hl
+                end)
+            end
+            if data.Highlight then
+                data.Highlight.Enabled = true
+                data.Highlight.Adornee = mob
+                data.Highlight.FillColor = _0xa299._0x22ce.highlightFill
+                data.Highlight.OutlineColor = _0xa299._0x22ce.highlightOutline
+                data.Highlight.FillTransparency = _0xa299._0x22ce.highlightTransparency
+            end
+        elseif data.Highlight then
+            data.Highlight.Enabled = false
         end
 
         -- Update Tracers
@@ -15251,7 +15334,7 @@ _mobHealthBar:AddSettings("Health Bar"):AddSlider("Mob Health Bar Width", 1, 10,
     _0xa299._0x22ce.healthBarWidth = Value
 end)
 
-local _mobBoxes = _0xa299._0xba0c:AddToggle("Mob Show Boxes", false, function(Value)
+local _mobBoxes = _0xa299._0xba0c:AddToggle("Mob Show Boxes", true, function(Value)
     _0xa299._0x22ce.showBoxes = Value
 end)
 _mobBoxes:AddColorPicker(_0xa299._0x22ce.boxColor, function(Value)
@@ -15260,6 +15343,30 @@ end)
 _mobBoxes:AddSettings("Boxes"):AddSlider("Mob Box Thickness", 1, 5, _0xa299._0x22ce.boxThickness, function(Value)
     _0xa299._0x22ce.boxThickness = Value
 end)
+
+-- Mob ESP had no highlight at all; the player ESP did. Same Highlight
+-- instance approach, parented away from the mob so a descendant scan on the
+-- model finds nothing that is not the game's own.
+local _mobHighlight = _0xa299._0xba0c:AddToggle("Mob Show Highlight", false, function(Value)
+    _0xa299._0x22ce.showHighlight = Value
+    if not Value then
+        for _, data in pairs(_0xa299._0x8fc8) do
+            if data.Highlight then
+                pcall(function() data.Highlight:Destroy() end)
+                data.Highlight = nil
+            end
+        end
+    end
+end)
+_mobHighlight:AddColorPicker(_0xa299._0x22ce.highlightFill, function(Value)
+    _0xa299._0x22ce.highlightFill = Value
+end)
+do
+    local g = _mobHighlight:AddSettings("Highlight")
+    g:AddSlider("Mob Highlight Transparency", 0, 1, _0xa299._0x22ce.highlightTransparency, function(Value)
+        _0xa299._0x22ce.highlightTransparency = Value
+    end)
+end
 
 local _mobTracers = _0xa299._0xba0c:AddToggle("Mob Show Tracers", false, function(Value)
     _0xa299._0x22ce.showTracers = Value
@@ -15305,8 +15412,14 @@ _0xa299._0xb956:AddSlider("Mob Max Distance", 50, 2000, 500, function(Value)
     _0xa299._0x22ce.maxDistance = Value
 end)
 
-_0xa299._0xb956:AddSlider("Mob Text Size", 10, 30, 16, function(Value)
+_0xa299._0xb956:AddSlider("Mob Text Size", 10, 30, 13, function(Value)
     _0xa299._0x22ce.textSize = Value
+end)
+
+-- Bars are unreadable clutter at range, so they get their own shorter radius
+-- than the tags do - same split the player ESP already had.
+_0xa299._0xb956:AddSlider("Mob Bar Render Distance", 20, 500, 150, function(Value)
+    _0xa299._0x22ce.barRenderDistance = Value
 end)
 
 _0xa299._0xb956:AddLabel("Shows NPCs/Mobs in world")
