@@ -11743,7 +11743,7 @@ _0xa299._0x7676 = {
     showDistance = true,
     showHealth = true,
     showHealthBar = true,
-    showBoxes = false,
+    showBoxes = true,   -- PRIVATE default
     showTracers = false,
     showHighlight = false,
     showClan = true,
@@ -11758,28 +11758,28 @@ _0xa299._0x7676 = {
     showTeam = false,
     teamCheck = false,
     maxDistance = 2000,
-    textSize = 16,
+    textSize = 14,      -- PRIVATE default
     barRenderDistance = 150, -- bars (blood/chakra/health) only draw this close in
     teamColor = Color3.fromRGB(0, 255, 0),
     enemyColor = Color3.fromRGB(255, 0, 0),
     whitelistUsers = "",
     _whitelistCache = {},
     nameColor = Color3.fromRGB(255, 255, 255),
-    distanceColor = Color3.fromRGB(200, 200, 200),
+    distanceColor = Color3.fromRGB(180, 180, 180),
     repColor = Color3.fromRGB(255, 215, 0),
-    awakenedColor = Color3.fromRGB(255, 100, 100),
-    freshieColor = Color3.fromRGB(100, 255, 100),
-    clanColor = Color3.fromRGB(150, 150, 255),
+    awakenedColor = Color3.fromRGB(255, 190, 90),
+    freshieColor = Color3.fromRGB(120, 200, 255),
+    clanColor = Color3.fromRGB(190, 160, 255),
     highlightColor = Color3.fromRGB(255, 0, 0),
     -- Ramped elements fade from these colours down to red as the value drains.
     healthTextHighColor = Color3.fromRGB(0, 255, 0),
     healthBarHighColor = Color3.fromRGB(0, 255, 0),
-    healthBarWidth = 4,
-    bloodBarHighColor = Color3.fromRGB(0, 255, 0),
-    bloodBarWidth = 4,
-    chakraBarColor = Color3.fromRGB(0, 100, 255),
-    chakraBarWidth = 4,
-    combatTimerColor = Color3.fromRGB(255, 100, 100),
+    healthBarWidth = 3,
+    bloodBarHighColor = Color3.fromRGB(200, 40, 40),   -- flat in PRIVATE, not ramped
+    bloodBarWidth = 3,
+    chakraBarColor = Color3.fromRGB(80, 170, 255),
+    chakraBarWidth = 3,
+    combatTimerColor = Color3.fromRGB(255, 120, 120),
     currentSkillColor = Color3.fromRGB(255, 180, 50),
     subCooldownColor = Color3.fromRGB(0, 200, 255),
     boxColor = Color3.fromRGB(255, 255, 255),
@@ -11787,15 +11787,15 @@ _0xa299._0x7676 = {
     tracerColor = Color3.fromRGB(255, 255, 255),
     tracerThickness = 1,
     tracerOrigin = "Bottom",
-    highlightOutlineColor = Color3.fromRGB(0, 0, 0),
-    highlightTransparency = 0.5,
+    highlightOutlineColor = Color3.fromRGB(255, 255, 255),
+    highlightTransparency = 0.65,
     showOofArrows = false,
     oofArrowsOffset = 150,
     oofArrowsSize = 15,
     oofArrowsRainbow = false,
     oofArrowsColor = Color3.fromRGB(255, 255, 255),
     showCooldowns = false,
-    cooldownColor = Color3.fromRGB(255, 140, 60),
+    cooldownColor = Color3.fromRGB(170, 170, 255),
     fontChoice = "Original",  -- V2 label font; see _0xESPApplyFont
     cooldownMax = 3,          -- how many skills to list at once
     cooldownShowTime = true,  -- append the remaining seconds
@@ -12492,6 +12492,25 @@ function _0xa299._0xRamp(fullColor, alpha)
     return _0xa299._0xRampLow:Lerp(fullColor or Color3.new(0, 1, 0), math.clamp(alpha or 0, 0, 1))
 end
 
+-- HEALTH RAMP, PRIVATE's version. Three stops rather than two, with orange
+-- bridging the middle, so a target at ~50% already reads as hurt instead of
+-- sitting halfway between red and green as a muddy olive - which is what the
+-- straight two-colour lerp above gives you.
+--
+-- _0xRamp is kept because the blood bar's swatch still drives it, and the Mob
+-- and Item ESP use it too.
+_0xa299._0xHPHigh = Color3.fromRGB(75, 210, 75)
+_0xa299._0xHPMid  = Color3.fromRGB(255, 140, 0)
+_0xa299._0xHPLow  = Color3.fromRGB(210, 40, 40)
+
+function _0xa299._0xHealthColor(pct)
+    pct = math.clamp(pct or 0, 0, 1)
+    if pct >= 0.5 then
+        return _0xa299._0xHPMid:Lerp(_0xa299._0xHPHigh, (pct - 0.5) * 2)
+    end
+    return _0xa299._0xHPLow:Lerp(_0xa299._0xHPMid, pct * 2)
+end
+
 -- Screen-space origin for tracers, shared by player and mob ESP.
 function _0xa299._0xTracerOrigin(mode)
     local vp = _0xa299._0x2f65.ViewportSize
@@ -12735,7 +12754,8 @@ function _0xEspBounds(hrp)
     end
     local cf = hrp.CFrame
     _0xEspBoundsTop = _0xa299._0x2f65:WorldToViewportPoint((cf * CFrame.new(0, 3, 0)).Position)
-    _0xEspBoundsBottom = _0xa299._0x2f65:WorldToViewportPoint((cf * CFrame.new(0, -3, 0)).Position)
+    -- -3.5 rather than -3: PRIVATE measures the box to the feet this way.
+    _0xEspBoundsBottom = _0xa299._0x2f65:WorldToViewportPoint((cf * CFrame.new(0, -3.5, 0)).Position)
     _0xEspBoundsKey = hrp
     return _0xEspBoundsTop, _0xEspBoundsBottom
 end
@@ -12842,7 +12862,8 @@ function _0xa299._0x1830()
         
         local sp = _0xa299._0x7676.espSpacing
         local textSize = _0xa299._0x7676.textSize or 18
-        local lineSpacing = 16
+        -- (the old fixed 16px line spacing went with the auto-stack layout;
+        --  rows now advance by their own text size, as PRIVATE does)
         
         -- Gather data for conditional tags
         local clanText = nil
@@ -12925,7 +12946,7 @@ function _0xa299._0x1830()
         elseif data.CurrentSkillTag then data.CurrentSkillTag.Visible = false end
 
         if _0xa299._0x7676.showCombatTimer and data.CombatTimerTag and combatTimer then
-            table.insert(espStack, {key = "CombatTimerTag", tag = data.CombatTimerTag, text = "Combat: " .. tostring(math.floor(combatTimer)) .. "s", color = _0xa299._0x7676.combatTimerColor, size = textSize - 4})
+            table.insert(espStack, {key = "CombatTimerTag", tag = data.CombatTimerTag, text = string.format("Combat %ds", math.floor(combatTimer)), color = _0xa299._0x7676.combatTimerColor, size = textSize - 2})
         elseif data.CombatTimerTag then data.CombatTimerTag.Visible = false end
         
         if _0xa299._0x7676.showActivatedMode and data.ActivatedModeTag and activatedMode then
@@ -12936,21 +12957,31 @@ function _0xa299._0x1830()
             table.insert(espStack, {key = "FreshieTag", tag = data.FreshieTag, text = "Freshie", color = _0xa299._0x7676.freshieColor, size = textSize - 4})
         elseif data.FreshieTag then data.FreshieTag.Visible = false end
         
-        if _0xa299._0x7676.showClan and data.ClanTag and clanText then
-            table.insert(espStack, {key = "ClanTag", tag = data.ClanTag, text = "[" .. clanText .. "]", color = _0xa299._0x7676.clanColor, size = textSize - 4})
+        -- Only its own row when the name is off. With the name on, the clan is
+        -- appended to it instead (see below), which is PRIVATE's format.
+        if _0xa299._0x7676.showClan and data.ClanTag and clanText
+           and not _0xa299._0x7676.showName then
+            table.insert(espStack, {key = "ClanTag", tag = data.ClanTag, text = "[" .. clanText .. "]", color = _0xa299._0x7676.clanColor, size = textSize - 2})
         elseif data.ClanTag then data.ClanTag.Visible = false end
         
         if _0xa299._0x7676.showName and data.NameTag then
-            table.insert(espStack, {key = "NameTag", tag = data.NameTag, text = targetPlayer.Name, color = color, size = textSize})
+            -- Clan goes INLINE in the name as "Name [Clan]", which is how
+            -- PRIVATE does it; the separate ClanTag row below is skipped when
+            -- the name is on so it is not printed twice.
+            local nameText = targetPlayer.Name
+            if clanText and _0xa299._0x7676.showClan then
+                nameText = nameText .. " [" .. clanText .. "]"
+            end
+            table.insert(espStack, {key = "NameTag", tag = data.NameTag, text = nameText, color = color, size = textSize})
         elseif data.NameTag then data.NameTag.Visible = false end
         
         if _0xa299._0x7676.showDistance and data.DistanceTag then
-            table.insert(espStack, {key = "DistanceTag", tag = data.DistanceTag, text = string.format("%.1f studs", distance), color = _0xa299._0x7676.distanceColor, size = textSize - 2})
+            table.insert(espStack, {key = "DistanceTag", tag = data.DistanceTag, text = string.format("%d studs", math.floor(distance)), color = _0xa299._0x7676.distanceColor, size = textSize - 1})
         elseif data.DistanceTag then data.DistanceTag.Visible = false end
         
         if _0xa299._0x7676.showHealth and data.HealthTag then
             local healthPercent = humanoid.Health / humanoid.MaxHealth
-            table.insert(espStack, {key = "HealthTag", tag = data.HealthTag, text = string.format("HP: %d/%d", math.floor(humanoid.Health), math.floor(humanoid.MaxHealth)), color = _0xa299._0xRamp(_0xa299._0x7676.healthTextHighColor, healthPercent), size = textSize - 2})
+            table.insert(espStack, {key = "HealthTag", tag = data.HealthTag, text = string.format("%d/%d HP", math.floor(humanoid.Health), math.floor(humanoid.MaxHealth)), color = _0xa299._0xHealthColor(healthPercent), size = textSize - 1})
         elseif data.HealthTag then data.HealthTag.Visible = false end
         
         -- Position all visible elements
@@ -12968,17 +12999,32 @@ function _0xa299._0x1830()
                 elem.tag.Size = elem.size
             end
         else
-            -- Auto-stack mode: stack upward dynamically, skip hidden elements
-            local slotY = 0
-            for i = #espStack, 1, -1 do
+            -- AUTO MODE, PRIVATE's layout: the name sits just ABOVE the box and
+            -- everything else stacks downward BELOW it. The old behaviour piled
+            -- every row above the head, which pushed the useful lines further
+            -- from the target the more of them you enabled.
+            --
+            -- Anchored to the box, not the head, so the block tracks the target
+            -- at any distance instead of drifting as the projection scales.
+            local topPos, bottomPos = _0xEspBounds(humanoidRootPart)
+            local boxH = math.abs(topPos.Y - bottomPos.Y)
+            local boxTop = topPos.Y
+
+            local infoY = boxTop + boxH + 2
+            for i = 1, #espStack do
                 local elem = espStack[i]
                 local xOff = sp[elem.key] and sp[elem.key].x or 0
                 elem.tag.Visible = true
-                elem.tag.Position = Vector2.new(headPos.X + xOff, headPos.Y + slotY)
                 elem.tag.Text = elem.text
                 elem.tag.Color = elem.color
                 elem.tag.Size = elem.size
-                slotY = slotY - lineSpacing
+
+                if elem.key == "NameTag" then
+                    elem.tag.Position = Vector2.new(rootPos.X + xOff, boxTop - 2 - elem.size)
+                else
+                    elem.tag.Position = Vector2.new(rootPos.X + xOff, infoY)
+                    infoY = infoY + elem.size
+                end
             end
         end
         
@@ -12997,12 +13043,18 @@ function _0xa299._0x1830()
         if showHp or showCk or showBl then
             local topPos, bottomPos = _0xEspBounds(humanoidRootPart)
             local screenHeight = math.abs(topPos.Y - bottomPos.Y)
-            local barHeight = screenHeight * 0.8
-            local barY = topPos.Y + (screenHeight - barHeight) / 2
 
-            -- Right edge of the column sits just left of the character.
-            local cursorX = rootPos.X - (screenHeight / 4) - 2
-            local gap = 2
+            -- PRIVATE's bar geometry: full box height, top-aligned with the box,
+            -- and the column hangs off the box's LEFT EDGE with a 4px gap. The
+            -- old version used 80% height centred vertically and derived its X
+            -- from screenHeight/4, which only matched the box edge by accident
+            -- and drifted away from it as the box ratio changed.
+            local barHeight = screenHeight
+            local barY = topPos.Y
+
+            local boxW = screenHeight * 0.55
+            local cursorX = rootPos.X - boxW / 2 - 4
+            local gap = 3
 
             -- Draw one bar of the column and advance the cursor leftwards.
             local function placeBar(outline, fill, width, pct, colour)
@@ -13025,7 +13077,7 @@ function _0xa299._0x1830()
                 local pct = humanoid.Health / humanoid.MaxHealth
                 placeBar(data.HealthBarOutline, data.HealthBarFill,
                     _0xa299._0x7676.healthBarWidth, pct,
-                    _0xa299._0xRamp(_0xa299._0x7676.healthBarHighColor, pct))
+                    _0xa299._0xHealthColor(pct))
             else
                 if data.HealthBarOutline then data.HealthBarOutline.Visible = false end
                 if data.HealthBarFill then data.HealthBarFill.Visible = false end
@@ -13045,7 +13097,7 @@ function _0xa299._0x1830()
                 local pct = _0xa299._0x9a9c(targetPlayer)
                 placeBar(data.BloodBarOutline, data.BloodBar,
                     _0xa299._0x7676.bloodBarWidth, pct,
-                    _0xa299._0xRamp(_0xa299._0x7676.bloodBarHighColor, pct))
+                    _0xa299._0x7676.bloodBarHighColor)
             else
                 if data.BloodBar then data.BloodBar.Visible = false end
                 if data.BloodBarOutline then data.BloodBarOutline.Visible = false end
@@ -13063,7 +13115,7 @@ function _0xa299._0x1830()
         if _0xa299._0x7676.showBoxes and data.Box and data.BoxOutline then
             local topPos, bottomPos = _0xEspBounds(humanoidRootPart)
             local height = math.abs(topPos.Y - bottomPos.Y)
-            local width = height / 2
+            local width = height * 0.55   -- PRIVATE ratio (was /2)
             local boxPos = Vector2.new(rootPos.X - width / 2, topPos.Y)
             local boxSize = Vector2.new(width, height)
 
@@ -30106,7 +30158,7 @@ _0xa299._0xFRFS.bossRewardPositions = {
     Vector3.new(-500.209869, -312.065948, -193.457336), -- Lava Rosa
     Vector3.new(-4709.994, 336.920, -2931.816), -- Wooden Golem
     Vector3.new(1526.77515, -534.000061, 726.881836), -- Manda
-    Vector3.new(-585.799011, -548.977051, -1486.100220), -- Lava Snake
+    Vector3.new(2394.2, -546.8, -13986.0), -- Lava Snake (moved, 2026-10-23)
     Vector3.new(2831.09229, -123.500015, -1153.08569), -- Chakra Knight
     Vector3.new(-673.371765, -359.864746, -732.643982), -- Hyuga Boss
     Vector3.new(1947.83374, -125.386833, -1214.7688), -- Shukaku
@@ -30114,7 +30166,7 @@ _0xa299._0xFRFS.bossRewardPositions = {
     Vector3.new(-3574.024, -389.077, -767.108), -- Isobu
     Vector3.new(-1032.42004, 262.756836, -1413.35388), -- Barbarit
     Vector3.new(-3786, -239.613, -9721.462), -- Haku Boss
-    Vector3.new(1605.684326, -487.367950, -612.306274), -- Samurai
+    Vector3.new(1605.68433, -487.562805, -7094.30664), -- Samurai (moved, 2026-10-23)
 }
 
 function _0xa299._0xFRFG()
@@ -30455,8 +30507,8 @@ _0xa299._0x1915 = {
         ["Hyuga Boss"] = 0,
         ["Barbarit The Rose"] = 0,
         ["Wooden Golem"] = 0,
---      ["Lava Snake"] = 0,   -- removed from the game
---      ["The Ringed Samurai"] = 0,   -- removed from the game
+        ["Lava Snake"] = 0,
+        ["The Ringed Samurai"] = 0,
         ["Haku"] = 0,
         ["Shukaku"] = 0,
         ["Matatabi"] = 0,
@@ -31862,19 +31914,22 @@ _0xa299._0x5ecb = {
         fourthDangerAnim = "rbxassetid://9954915471",
         dangerTime = 0.1
     },
-    -- REMOVED FROM THE GAME (2026-10-21): "Lava Snake" no longer exists.
---    ["Lava Snake"] = {
---        workspaceName = "Lava Snake",
---        offset = 6.6,
---        spawnPosition = CFrame.new(-607.606445, -548.977051, -1316.985962),
---        rewards = "LavaSnakeRewards",
---        rewardspos = CFrame.new(-585.799011, -548.977051, -1486.100220),
---        spawnEvent = "activateLavaSnake",
---        dangerAnim = "rbxassetid://9954909571",
---        secondDangerAnim = "rbxassetid://9954860601",
---        thirdDangerAnim = "rbxassetid://9954915471",
---        dangerTime = 0.1
---    },
+    -- RE-ENABLED 2026-10-23. It was commented out on 2026-10-21 as removed from
+    -- the game; it is back, in a new area. Both positions are the user's
+    -- measurements - the arena moved right across the map (Z -1317 -> -13801),
+    -- so the old coordinates were never going to find it.
+    ["Lava Snake"] = {
+        workspaceName = "Lava Snake",
+        offset = 6.6,
+        spawnPosition = CFrame.new(2390.2, -549.0, -13800.8),
+        rewards = "LavaSnakeRewards",
+        rewardspos = CFrame.new(2394.2, -546.8, -13986.0),
+        spawnEvent = "activateLavaSnake",
+        dangerAnim = "rbxassetid://9954909571",
+        secondDangerAnim = "rbxassetid://9954860601",
+        thirdDangerAnim = "rbxassetid://9954915471",
+        dangerTime = 0.1
+    },
     ["Chakra Knight"] = {
         workspaceName = "Chakra Knight",
         alternateName = "Frosty Chakra Knight",
@@ -31965,20 +32020,40 @@ _0xa299._0x5ecb = {
         dangerAnim = "rbxassetid://115050474132580", -- Wrong ( i simply didnt add one to replace )
         dangerTime = 0.10
     },
-    -- REMOVED FROM THE GAME (2026-10-21): "The Ringed Samurai" no longer exists.
---    ["The Ringed Samurai"] = {
---        workspaceName = "The Ringed Samurai",
---        offset = 14,
---        spawnPosition = CFrame.new(1394.901245, -477.651978, -593.969666),
---        rewards = "SamuraiRwards",
---        rewardspos = CFrame.new(1605.684326, -487.367950, -612.306274),
---        spawnEvent = "activateSamurai",
---        dangerAnim = "rbxassetid://9656290960",
---        dangerAnimOffset = 2,
---        secondDangerAnim = "rbxassetid://137738911755203",
---        secondDangerAnimOffset = 1500,
---        dangerTime = 0.2
---    },
+    -- RE-ENABLED 2026-10-23, same story as Lava Snake above. Both CFrames are
+    -- the user's measurements, kept with their rotation.
+    --
+    -- Note the spawn and the reward spot are about 3900 studs apart here
+    -- (4586,19,-10094 vs 1606,-488,-7094), which is far more than any other
+    -- boss - every one of those has its rewards inside the arena. If loot
+    -- collection misbehaves, that gap is the first thing to check rather than
+    -- assuming the farm logic is wrong.
+    --
+    -- "SamuraiRwards" is NOT a typo I introduced; it is what was here before.
+    -- The Boss Rooms teleport list spells the same folder "SamuraiRewards",
+    -- so one of the two is wrong and I could not check live. If loot comes up
+    -- empty for this boss, try the other spelling.
+    ["The Ringed Samurai"] = {
+        workspaceName = "The Ringed Samurai",
+        offset = 14,
+        spawnPosition = CFrame.new(4585.87695, 18.7208252, -10093.8076,
+            -1, 0, 0, 0, 1, 0, 0, 0, -1),
+        -- Explicit, because the streaming sweep's anchor order is
+        -- streamPos > rewardspos > spawnPosition, and this boss's reward spot
+        -- is ~3900 studs from its arena - so without this it would stream in
+        -- the loot area and still not find the boss. Matatabi and Gaara set
+        -- streamPos for the same reason.
+        streamPos = CFrame.new(4585.87695, 18.7208252, -10093.8076),
+        rewards = "SamuraiRwards",
+        rewardspos = CFrame.new(1605.68433, -487.562805, -7094.30664,
+            0, 0, -1, 0, 1, 0, 1, 0, 0),
+        spawnEvent = "activateSamurai",
+        dangerAnim = "rbxassetid://9656290960",
+        dangerAnimOffset = 2,
+        secondDangerAnim = "rbxassetid://137738911755203",
+        secondDangerAnimOffset = 1500,
+        dangerTime = 0.2
+    },
     -- Gaara dodges by WORLD STATE, not by animation id, so it uses
     -- customDanger instead of the dangerAnim chain - see _0xa299._0xGaaraDodge.
     ["Gaara"] = {
@@ -32073,7 +32148,7 @@ function _0xa299._0xe54e()
 
     -- Track which spawnable bosses have players nearby (for skipping)
     local spawnableBossesWithPlayers = {}
-    local spawnableBosses = {"Lava Rosa", "Manda", "Barbarit The Rose"}   -- Lava Snake / Ringed Samurai removed from the game
+    local spawnableBosses = {"Lava Rosa", "Manda", "Barbarit The Rose", "Lava Snake", "The Ringed Samurai"}
 
     -- Clean up expired skipped bosses (30 second timeout)
     local currentTime = tick()
@@ -32263,7 +32338,7 @@ function _0xa299._0xe54e()
                     end
                 elseif bossName == "Lava Snake" then
                     -- Special distance check for Lava Snake
-                    local lavaSnakeSpawnLocation = Vector3.new(-607.606445, -548.977051, -1316.985962)
+                    local lavaSnakeSpawnLocation = Vector3.new(2390.2, -549.0, -13800.8)
                     local bossHrp = foundBoss:FindFirstChild("HumanoidRootPart") or foundBoss:FindFirstChild("Torso")
                     if not bossHrp then
                         bossHrp = foundBoss:WaitForChild("HumanoidRootPart", 2) or foundBoss:WaitForChild("Torso", 2)
@@ -34934,10 +35009,9 @@ function _0xa299._0x6ce0()
     end
 end
 
--- Boss selection dropdown
--- REMOVED FROM THE GAME (2026-10-21): Lava Snake and The Ringed Samurai
--- no longer exist, so they are out of the selectable boss lists.
-_0xa299._0xc152 = {"Tairock", "Might Guy", "Lava Rosa", "Chakra Knight", "Manda", "Hyuga Boss", "Barbarit The Rose", "Wooden Golem", "Haku", "Shukaku", "Matatabi", "Isobu", "Gaara"}
+-- Boss selection dropdown. Lava Snake and The Ringed Samurai were pulled on
+-- 2026-10-21 as removed from the game and put back 2026-10-23.
+_0xa299._0xc152 = {"Tairock", "Might Guy", "Lava Rosa", "Chakra Knight", "Manda", "Hyuga Boss", "Barbarit The Rose", "Wooden Golem", "Haku", "Shukaku", "Matatabi", "Isobu", "Gaara", "Lava Snake", "The Ringed Samurai"}
 
 _0xa299._0xf02e:AddLabel('Select Bosses to Farm:')
 
