@@ -12857,7 +12857,24 @@ function _0xa299._0x1830()
             activatedMode = _0xa299._0xa8e6(targetPlayer)
         end
         
-        -- Reputation Tag disabled
+        -- Reputation Tag disabled, and it cannot be brought back. Checked
+        -- properly 2026-10-23:
+        --
+        --   * GetData().Reputation DOES come back as a table keyed by all six
+        --     villages, which makes it look available - but the server STUBS
+        --     it and every value is 0 regardless of actual reputation
+        --     (verified on an account that has real rep).
+        --   * Other players' reputation is not exposed at all. GetPlayerList
+        --     entries carry only GameName, RealName, ID, Rank, Title, Clan,
+        --     ClanLeader, Village and Ironline - the old _0x8c22 read a
+        --     .Reputation field off this that has never existed, which is why
+        --     it only ever produced zeros.
+        --   * The game's own client never reads Reputation anywhere, so there
+        --     is no in-game display to copy from either.
+        --
+        -- Rank is the usable proxy: it is purely a reputation threshold, so it
+        -- brackets the value. Sorythia Genin 20 / Chunin 75 / Jonin 200,
+        -- Rogue D 25 / C 50 / B 100 / A 150 / S 200.
         if data.ReputationTag then data.ReputationTag.Visible = false end
         
         local sp = _0xa299._0x7676.espSpacing
@@ -27969,6 +27986,655 @@ end)
 ---------------------------------------------------------------------
 -- FARM TAB - AUTO PROG
 ---------------------------------------------------------------------
+---------------------------------------------------------------------
+-- AUTO PROG: BUILD MAXING (skill trees / wipe at 25 / Genin exam)
+--
+-- The point of all this is the Ironline wipe: reincarnating through Ironline
+-- pays far more embers, so the run is to max the build out, hit age 25, and
+-- wipe. These three features are what gets you there without babysitting it.
+--
+-- THE ONE RULE THAT MATTERS: UnlockSkill is only safe while you are SEATED AT
+-- A CHAKRA POINT. Firing it standing in a field is a ban. That is not a
+-- client-side UI gate either - the server knows whether you are resting,
+-- because the game's own sit sequence told it.
+--
+-- So every unlock goes through _0xa299._0xProgSeated, which reuses the exact
+-- flow the chakra point breaker already uses and has not banned anyone:
+-- teleport to the point, send a REAL E keypress so the game's own client runs
+-- hasTeleported (anchors you, sets Occupied, plays SittingCrossLegged, tells
+-- the server), do the work, then stand up through _0xLeaveChakraPoint. We
+-- never fabricate the seated state, we ask the game to put us in it.
+--
+-- queueIronline is NOT like that - it has no resting precondition, so it is
+-- fired directly rather than walking the Iron Spirit's dialogue.
+---------------------------------------------------------------------
+_0xa299._0xProgBuild = {
+    skillTree    = false,
+    wipeAt25     = false,
+    useIronline  = false,
+    geninExam    = false,
+    wipeAge      = 25,
+    paths        = { Taijutsu = true, Sealing = true, Stamina = true, Genjutsu = true },
+    wiped        = false,   -- one wipe per enable, so a failed wipe cannot loop
+    examTried    = false,   -- cleared on age up
+    lastTreeRun  = 0,
+}
+
+---------------------------------------------------------------------
+-- THE FOUR PATHS
+--
+-- Taken from GameManager's Skills table and listed in DEPENDENCY ORDER. Each
+-- chain is linear - every skill's Requirements.Skills names exactly the one
+-- before it - so a plain ordered list is all this needs, no sorting at
+-- runtime.
+--
+-- "Stamina" is the Acrobat branch and "Taijutsu" is SkillType2 = Taijutsu;
+-- neither is a branch name you can look up, which is why they are spelled out.
+--
+-- Each path's first real skill is gated behind a quest item, and all four of
+-- those quests are ones Auto Prog already runs:
+--     Taijutsu  Weighted Kick      <- Combat Scroll      (Combat Instructor)
+--     Stamina   Core Strength      <- Parkour Scroll      (Parkour Training)
+--     Sealing   Sealing Barrier Rod<- Sealing Bells       (Bells)
+--     Genjutsu  Feather Genjutsu   <- Kurenai's Blessing  (Kurenai Genjutsu)
+--
+-- Deliberately NOT included: Beast Extraction (needs Chain Application),
+-- Improved Barrage and Improved Whirlwind (both need Taijutsu Combat). Those
+-- depend on skills outside their own path, so walking the path can never
+-- satisfy them. See the note on the table itself for the bloodline-gated
+-- tails, which ARE listed.
+---------------------------------------------------------------------
+-- The ROOTS matter as much as the paths themselves.
+--
+-- Every chain starts from a base skill that is NOT part of the path, and on a
+-- fresh life you own none of them - which is the whole point of a
+-- wipe-and-rebuild loop. Left out, the lead skill of every path would be
+-- refused forever on an unmet SKILL prerequisite, and nothing in the logs
+-- would say why:
+--     Weighted Kick     <- Substitution                     (Ryo 10)
+--     Improved Stamina  <- Substitution                     (Ryo 10)
+--     Feather Genjutsu  <- Chakra Tree Jump <- Substitution  (Ryo 30 / 10)
+--     Sealing Floor     <- Chakra Charge <- Chakra Feet <- Substitution
+--                                                 (Ryo 40 / 30 / 10)
+-- So they are prepended. They are cheap and shared, so whichever path runs
+-- first pays for the overlap and the rest find them already owned.
+--
+-- The bloodline-gated tails ARE listed (Extraction Seal and Adamantine Sealing
+-- Chains want Uzumaki Affinity, Adamantine also a Reanimated Soul). Listing
+-- them costs nothing: a refusal just ends that path, exactly as omitting them
+-- would, but an Uzumaki actually gets them.
+--
+-- Still left out: Beast Extraction (needs Chain Application), Improved Barrage
+-- and Improved Whirlwind (both need Taijutsu Combat). Those depend on skills
+-- outside their own path, so walking the path can never satisfy them.
+_0xa299._0xSkillPaths = {
+    Sealing = {
+        "Substitution", "Chakra Feet", "Chakra Charge",
+        "Sealing Floor", "Binding Seal", "Sealing Banners",
+        "Sealing Barrier Rod", "Extraction Seal", "Adamantine Sealing Chains",
+    },
+    Genjutsu = {
+        "Substitution", "Chakra Tree Jump",
+        "Feather Genjutsu", "Fog Illusion", "Scrambled Mind",
+        "Crow Illusion", "Genjutsu Release", "Izanagi",
+    },
+    Stamina = {
+        "Substitution",
+        "Improved Stamina", "Core Strength", "Efficient Substitution",
+        "Lightweight", "Aerial Backflip", "Flicker Step", "Effortless",
+    },
+    Taijutsu = {
+        "Substitution",
+        "Weighted Kick", "Leaf Whirlwind", "Dynamic Entry", "Lion's Barrage",
+    },
+}
+
+-- Order the paths are attempted in. Sealing and Stamina first because their
+-- early skills need only a Chakra Shard, so they make progress on a fresh
+-- life while the other two are still waiting on a scroll.
+_0xa299._0xSkillPathOrder = { "Sealing", "Stamina", "Genjutsu", "Taijutsu" }
+
+-- Do we already own it? UnlockedSkills is a flat array of names.
+function _0xa299._0xHasSkill(data, skillName)
+    if type(data) ~= "table" or type(data.UnlockedSkills) ~= "table" then return false end
+    for _, owned in pairs(data.UnlockedSkills) do
+        if tostring(owned) == skillName then return true end
+    end
+    return false
+end
+
+-- The next skill on a path that we do not own yet, or nil if the path is done.
+-- Stops at the first gap rather than skipping it: the chains are strictly
+-- ordered, so a skill we cannot get yet blocks everything behind it anyway.
+function _0xa299._0xNextSkillOnPath(data, pathName)
+    local chain = _0xa299._0xSkillPaths[pathName]
+    if not chain then return nil end
+    for _, skillName in ipairs(chain) do
+        if not _0xa299._0xHasSkill(data, skillName) then
+            return skillName
+        end
+    end
+    return nil
+end
+
+---------------------------------------------------------------------
+-- SEATED WORK
+--
+-- Sit at a chakra point, run fn(), stand up. fn() is where UnlockSkill goes.
+--
+-- Mirrors _0xa299._0xAutoProgBreakPoint's sequence, minus the destroy: that
+-- one is the proven-safe path for acting while seated, and the only reason it
+-- is not reused directly is that it ends by breaking the point.
+---------------------------------------------------------------------
+_0xa299._0xProgSitSettle = 1.5   -- seconds after E before the menu is usable
+
+function _0xa299._0xProgSeated(pointModel, fn)
+    local char = _0xa299._0x396d.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not (hrp and pointModel) then return false, "no character or point" end
+
+    local pointPart = pointModel:FindFirstChild("Main") or pointModel:FindFirstChildWhichIsA("BasePart")
+    if not pointPart then return false, "point has no part" end
+
+    -- Don't sit down in front of an audience.
+    for _, other in ipairs(_0xa299._0x71bb:GetPlayers()) do
+        if other ~= _0xa299._0x396d and other.Character then
+            local ohrp = other.Character:FindFirstChild("HumanoidRootPart")
+            if ohrp and (ohrp.Position - pointPart.Position).Magnitude < 150 then
+                return false, "player nearby"
+            end
+        end
+    end
+
+    -- Already resting? Then do NOT press E - that would stand us up. Just do
+    -- the work from where we are. This happens whenever the chakra point
+    -- breaker or the user left us seated.
+    local alreadySeated = false
+    pcall(function()
+        local mf0 = _0xa299._0x396d.PlayerGui.ClientGui:FindFirstChild("Mainframe")
+        local rest0 = mf0 and mf0:FindFirstChild("Rest")
+        alreadySeated = rest0 ~= nil and rest0.Visible == true
+    end)
+
+    if alreadySeated then
+        local okNow, errNow = pcall(fn)
+        task.wait(0.3)
+        pcall(function() _0xa299._0xLeaveChakraPoint(pointModel) end)
+        if not okNow then return false, tostring(errNow) end
+        return true
+    end
+
+    local VIM = game:GetService("VirtualInputManager")
+
+    hrp.CFrame = pointPart.CFrame + Vector3.new(0, 3, 0)
+    task.wait(0.5)
+
+    -- A real keypress, so the GAME seats us and tells the server. This is the
+    -- whole reason UnlockSkill is safe from here.
+    VIM:SendKeyEvent(true, Enum.KeyCode.E, false, game)
+    task.wait(0.1)
+    VIM:SendKeyEvent(false, Enum.KeyCode.E, false, game)
+
+    task.wait(_0xa299._0xProgSitSettle)
+
+    -- Confirm the game actually seated us before touching anything. If Rest is
+    -- not up we are not resting, and firing from here is the ban case.
+    local seated = false
+    pcall(function()
+        local mf = _0xa299._0x396d.PlayerGui.ClientGui:FindFirstChild("Mainframe")
+        local rest = mf and mf:FindFirstChild("Rest")
+        seated = rest ~= nil and rest.Visible == true
+    end)
+    if not seated then
+        pcall(function() _0xa299._0xLeaveChakraPoint(pointModel) end)
+        return false, "did not seat"
+    end
+
+    local ok, err = pcall(fn)
+
+    task.wait(0.3)
+    pcall(function() _0xa299._0xLeaveChakraPoint(pointModel) end)
+
+    if not ok then return false, tostring(err) end
+    return true
+end
+
+-- Fire the unlock. ONLY ever called from inside _0xProgSeated.
+function _0xa299._0xProgUnlock(skillName)
+    local got = nil
+    pcall(function()
+        got = _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataFunction")
+            :InvokeServer("UnlockSkill", skillName)
+    end)
+    return got and true or false
+end
+
+---------------------------------------------------------------------
+-- SKILL PREREQUISITE ITEMS
+--
+-- Four of the five gating items in the skill paths can be fetched, so a path
+-- blocked on one is not actually blocked - it just needs the thing that yields
+-- it run first. Sources, all confirmed out of the GameManager rather than
+-- guessed from names:
+--
+--   Chakra Shard        BREAKING A CHAKRA POINT. No separate action needed:
+--                       Auto Prog already breaks points, so shards accumulate
+--                       on their own. It is listed here only so the status
+--                       says "waiting on a shard" rather than silently
+--                       stalling - and because it gates the FIRST skill of
+--                       three of the four paths, so it is the usual reason a
+--                       fresh life makes no tree progress yet.
+--   Sealing Bells       World pickup, spawns beside the Training Bells the
+--                       Bells quest already collects. Same ItemDetector, same
+--                       streaming problem, so it reuses that quest's anchors.
+--   Parkour Scroll      Quest "Parkour Training".
+--   Combat Scroll       Quest "Combat Training" - note the name. Auto Prog
+--                       lists this as "Combat Instructor", which is the NPC,
+--                       not the quest.
+--   Kurenai's Blessing  Quest "Kurenai's Blessing".
+--
+-- The quest ones go through _0xAutoProgExecuteQuest, so they get the same
+-- safety wrapper, GUI updates and webhook as any other Auto Prog quest.
+---------------------------------------------------------------------
+
+-- Which item blocks which skill. Only the ITEM requirements are listed; Ryo,
+-- Acumen, Chakra Fragments and bloodline affinities are left to the server to
+-- refuse, same as the unlock itself.
+_0xa299._0xSkillItemGate = {
+    ["Sealing Floor"]      = { "Chakra Shard" },
+    ["Sealing Barrier Rod"] = { "Sealing Bells" },
+    ["Improved Stamina"]   = { "Chakra Shard" },
+    ["Core Strength"]      = { "Parkour Scroll" },
+    ["Weighted Kick"]      = { "Chakra Shard", "Combat Scroll" },
+    ["Feather Genjutsu"]   = { "Chakra Shard", "Kurenai's Blessing" },
+}
+
+-- Item -> the Auto Prog quest that rewards it. Chakra Shard and Sealing Bells
+-- are absent deliberately: neither comes from a quest.
+_0xa299._0xItemQuest = {
+    ["Parkour Scroll"]     = "Parkour Training",
+    ["Combat Scroll"]      = "Combat Instructor",
+    ["Kurenai's Blessing"] = "Kurenai Genjutsu",
+}
+
+_0xa299._0xSealingBellsPos = CFrame.new(153.143494, -270.399963, 967.828003,
+    0, 0, 1, 0, 1, -0, -1, 0, 0)
+
+---------------------------------------------------------------------
+-- SEALING BELLS
+--
+-- Lifted from the Bells quest's approach, because the same two problems apply:
+-- the bells sit far enough out that a stream request does not reach them (so
+-- we travel), and the click does not register unless we are still sitting on
+-- the bell when it lands (so the position is re-pinned across both waits
+-- rather than teleporting and immediately leaving).
+---------------------------------------------------------------------
+function _0xa299._0xProgSealingBells()
+    local plr = _0xa299._0x396d
+    if not (plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")) then
+        return false
+    end
+
+    local startpos = plr.Character.HumanoidRootPart.CFrame
+
+    -- Look where we last saw them first, then the known bell anchors - the
+    -- Sealing Bells spawn beside the Training Bells, so those anchors already
+    -- cover this.
+    local anchors = {}
+    local remembered = _0xa299._0xWorldPos["Sealing Bells"]
+    if remembered then anchors[1] = remembered end
+    table.insert(anchors, _0xa299._0xSealingBellsPos)
+    for _, a in ipairs(_0xa299._0xBellAnchors or {}) do
+        table.insert(anchors, a)
+    end
+
+    local bells = _0xa299._0xTravelSweep(anchors, function()
+        local b = workspace:FindFirstChild("Sealing Bells")
+        -- Unlike the Training Bells, these were observed at Transparency 0.5
+        -- rather than 0, so this does NOT test for 0 - it only rejects a fully
+        -- invisible one, which is what a taken bell looks like.
+        if b and b:IsA("BasePart") and b.Transparency < 1 then
+            _0xa299._0xWorldPos["Sealing Bells"] = b.Position
+            return b
+        end
+        return nil
+    end)
+
+    if not bells then
+        _0xa299._0x8545:Notify("Auto Prog", "Sealing Bells not found", 3, "warning")
+        return false
+    end
+
+    local bellCF = bells.CFrame
+    local function holdAtBell(seconds)
+        local deadline = tick() + seconds
+        repeat
+            local hrp = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
+            if not hrp then return false end
+            hrp.CFrame = bellCF
+            task.wait()
+        until tick() > deadline
+        return true
+    end
+
+    plr.Character.HumanoidRootPart.CFrame = bellCF
+
+    local took = false
+    if holdAtBell(0.5) then
+        local detector = bells:FindFirstChild("ItemDetector")
+            or bells:FindFirstChild("ClickDetector")
+        if detector then
+            pcall(function() fireclickdetector(detector) end)
+            took = true
+        end
+        holdAtBell(0.8)
+    end
+
+    if plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then
+        plr.Character.HumanoidRootPart.CFrame = startpos
+    end
+
+    if took then
+        _0xa299._0x8545:Notify("Auto Prog", "Picked up Sealing Bells", 2, "check")
+    end
+    return took
+end
+
+---------------------------------------------------------------------
+-- ACQUIRE WHAT A BLOCKED SKILL NEEDS
+--
+-- Returns true if it did something worth retrying the tree for. Only ever
+-- fetches ONE item per call: each fetch is a trip across the map, and the
+-- tree pass runs again on the next idle window anyway.
+---------------------------------------------------------------------
+---------------------------------------------------------------------
+-- RETRY MEMORY
+--
+-- A fetch can fail for reasons that have nothing to do with us. Both of the
+-- bell-based ones share a root cause: the Sealing Bells pickup needs the
+-- Sealing Bells to be lying there, and the Parkour Scroll needs the TRAINING
+-- Bells, because "Parkour Training" is the quest the Bells entry runs - and
+-- either can simply have been taken by another player. The quest then refuses
+-- outright.
+--
+-- So a failure is remembered and that item is left alone for two minutes
+-- rather than retried on every pass. Without this, a missing bell would mean
+-- the tree pass travels across the map and fails every 30s for the rest of
+-- the age.
+--
+-- Deliberately NOT cleared on age up: bells respawn on their own schedule, not
+-- the age's, so clearing the timer early would just produce another wasted
+-- trip. It clears when Auto Prog is re-enabled, which is the one point where
+-- "try everything again" is actually what is wanted.
+---------------------------------------------------------------------
+_0xa299._0xProgItemRetry = {}       -- itemName -> tick() when it may be tried again
+_0xa299._0xProgItemRetryGap = 120   -- 2 minutes
+
+function _0xa299._0xProgItemReady(itemName)
+    local at = _0xa299._0xProgItemRetry[itemName]
+    return at == nil or tick() >= at
+end
+
+function _0xa299._0xProgItemFailed(itemName, why)
+    _0xa299._0xProgItemRetry[itemName] = tick() + _0xa299._0xProgItemRetryGap
+    _0xa299._0x8545:Notify("Auto Prog",
+        itemName .. " unavailable (" .. tostring(why) .. ") - retrying in 2m", 3, "warning")
+end
+
+function _0xa299._0xProgAcquireFor(data, skillName)
+    local gates = _0xa299._0xSkillItemGate[skillName]
+    if not gates then return false end
+
+    for _, itemName in ipairs(gates) do
+        if _0xa299._0xCountItem(data, itemName) <= 0 then
+            -- Shards come from breaking points, which Auto Prog is already
+            -- doing on its own schedule. Nothing to fetch, so just say why the
+            -- path is stalled instead of looking broken. Rate-limited through
+            -- the same retry table so it does not repeat the notification
+            -- every pass.
+            if itemName == "Chakra Shard" then
+                if _0xa299._0xProgItemReady(itemName) then
+                    _0xa299._0xProgItemRetry[itemName] = tick() + _0xa299._0xProgItemRetryGap
+                    _0xa299._0x8545:Notify("Auto Prog",
+                        skillName .. " needs a Chakra Shard - break a point", 3, "info")
+                end
+                -- Not a failure we can act on; let another path have a go.
+                continue
+            end
+
+            -- Still cooling down from a failed attempt: skip to the next gate
+            -- or the next path rather than making the trip again.
+            if not _0xa299._0xProgItemReady(itemName) then
+                continue
+            end
+
+            if itemName == "Sealing Bells" then
+                local got = _0xa299._0xProgSealingBells()
+                if got then
+                    _0xa299._0xProgItemRetry[itemName] = nil
+                    return true
+                end
+                _0xa299._0xProgItemFailed(itemName, "bells not there")
+                continue
+            end
+
+            local questName = _0xa299._0xItemQuest[itemName]
+            if questName then
+                _0xa299._0x8545:Notify("Auto Prog",
+                    "Need " .. itemName .. " - running " .. questName, 3, "info")
+
+                local ok = false
+                pcall(function()
+                    ok = _0xa299._0xAutoProgExecuteQuest(questName)
+                end)
+
+                -- The quest reporting success is not proof we got the item:
+                -- Parkour Training completes its motions and still yields
+                -- nothing if the bells were gone. Check the inventory.
+                local after = nil
+                pcall(function()
+                    after = _0xa299._0xe08d.Events.DataFunction:InvokeServer("GetData")
+                end)
+                local held = (type(after) == "table")
+                    and _0xa299._0xCountItem(after, itemName) or 0
+
+                if held > 0 then
+                    _0xa299._0xProgItemRetry[itemName] = nil
+                    return true
+                end
+
+                _0xa299._0xProgItemFailed(itemName,
+                    ok and "quest gave nothing" or "quest refused")
+                continue
+            end
+
+            continue
+        end
+    end
+
+    return false
+end
+
+---------------------------------------------------------------------
+-- SKILL TREE PASS
+--
+-- One seated visit, then as many unlocks as the server will accept. Batched
+-- deliberately: sitting down per skill would be a lot of teleporting and a lot
+-- of E presses for no benefit.
+--
+-- Affordability is NOT pre-computed. The requirements are a mix of Ryo,
+-- Acumen, item counts and bloodline affinities, and the server is the
+-- authority on all of them - so the unlock is simply attempted and a refusal
+-- is taken as "not yet", which is also how the game's own button behaves.
+-- Data is re-read after each success so the next skill sees the spend.
+---------------------------------------------------------------------
+_0xa299._0xProgTreeEvery = 30   -- seconds between passes
+
+function _0xa299._0xProgSkillTreePass()
+    if not _0xa299._0xProgBuild.skillTree then return end
+    if (tick() - _0xa299._0xProgBuild.lastTreeRun) < _0xa299._0xProgTreeEvery then return end
+    _0xa299._0xProgBuild.lastTreeRun = tick()
+
+    local data = _0xa299._0xLocalData and _0xa299._0xLocalData() or nil
+    if type(data) ~= "table" then
+        pcall(function()
+            data = _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataFunction")
+                :InvokeServer("GetData")
+        end)
+    end
+    if type(data) ~= "table" then return end
+
+    -- Anything left to do at all? Avoids a pointless sit-down.
+    local wanted = {}
+    for _, pathName in ipairs(_0xa299._0xSkillPathOrder) do
+        if _0xa299._0xProgBuild.paths[pathName] then
+            local nextSkill = _0xa299._0xNextSkillOnPath(data, pathName)
+            if nextSkill then wanted[#wanted + 1] = { pathName, nextSkill } end
+        end
+    end
+    if #wanted == 0 then return end
+
+    local point = _0xa299._0xChakraPointCurrent()
+    if not point then
+        point = workspace:FindFirstChild("ChakraPoints")
+        point = point and point:GetChildren()[1] or nil
+    end
+    if not point then return end
+
+    _0xa299._0x8545:Notify("Auto Prog", "Progressing skill trees", 2, "info")
+
+    local unlocked, refused = 0, 0
+    _0xa299._0xProgSeated(point, function()
+        for _, entry in ipairs(wanted) do
+            if not _0xa299._0xProgBuild.skillTree then break end
+            local pathName, skillName = entry[1], entry[2]
+
+            -- Walk as far down this path as the server allows in one sitting.
+            local guard = 0
+            while skillName and guard < 12 do
+                guard = guard + 1
+                if _0xa299._0xProgUnlock(skillName) then
+                    unlocked = unlocked + 1
+                    _0xa299._0x8545:Notify("Auto Prog", "Unlocked " .. skillName, 2, "check")
+                    task.wait(0.4)
+
+                    local fresh = nil
+                    pcall(function()
+                        fresh = _0xa299._0xe08d.Events.DataFunction:InvokeServer("GetData")
+                    end)
+                    if type(fresh) ~= "table" then break end
+                    data = fresh
+                    skillName = _0xa299._0xNextSkillOnPath(data, pathName)
+                else
+                    refused = refused + 1
+                    break   -- requirements not met; the rest of the path is blocked
+                end
+            end
+        end
+    end)
+
+    if unlocked > 0 then
+        _0xa299._0x8545:Notify("Auto Prog",
+            ("Skill tree: %d unlocked"):format(unlocked), 3, "check")
+        return
+    end
+
+    -- Nothing moved, so the lead skill on every path is blocked. If the
+    -- blocker is a missing ITEM we can fetch, go and get it - a path waiting on
+    -- a scroll is not actually stuck, it just needs that quest run first.
+    --
+    -- Deliberately outside the seated block above: these travel across the map
+    -- and run whole quests, which is not something to do while sat on a chakra
+    -- point. One item per pass; the next idle window picks up the next.
+    if refused > 0 then
+        local fresh = nil
+        pcall(function()
+            fresh = _0xa299._0xe08d.Events.DataFunction:InvokeServer("GetData")
+        end)
+        if type(fresh) == "table" then
+            for _, entry in ipairs(wanted) do
+                if not _0xa299._0xProgBuild.skillTree then break end
+                local got = false
+                pcall(function()
+                    got = _0xa299._0xProgAcquireFor(fresh, entry[2])
+                end)
+                if got then
+                    -- Something arrived; try the tree again straight away
+                    -- rather than idling another 30s.
+                    _0xa299._0xProgBuild.lastTreeRun = 0
+                    return
+                end
+            end
+        end
+    end
+end
+
+---------------------------------------------------------------------
+-- GENIN EXAM
+--
+-- One remote, no seating requirement. GameManager.Exams.Genin wants a single
+-- requirement met, and the rank ladder puts Genin at 20 Sorythia reputation -
+-- so this is attempted and a refusal simply means not yet.
+---------------------------------------------------------------------
+function _0xa299._0xProgGeninExam()
+    if not _0xa299._0xProgBuild.geninExam then return end
+    if _0xa299._0xProgBuild.examTried then return end
+
+    -- Attempted rather than pre-checked: eligibility is the server's call
+    -- (GameManager.Exams.Genin plus the 20 Sorythia reputation the Genin rank
+    -- threshold wants), and reputation is stubbed to 0 for clients so we could
+    -- not evaluate it here even if we wanted to. Latched either way so a
+    -- refusal does not retry every tick; the latch clears on age up.
+    _0xa299._0xProgBuild.examTried = true
+
+    local result = nil
+    pcall(function()
+        result = _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataFunction")
+            :InvokeServer("GeninExam")
+    end)
+
+    if result then
+        _0xa299._0x8545:Notify("Auto Prog", "Genin exam taken", 3, "check")
+    end
+end
+
+---------------------------------------------------------------------
+-- THE WIPE
+--
+-- Reincarnation is two calls and the ORDER matters: the game resets its chakra
+-- points first, then asks for the reincarnation (client line ~15177). Ironline
+-- has to be queued BEFORE that, because the flag is consumed by the
+-- reincarnation that follows it - queueing after would apply to the life after
+-- next.
+--
+-- Latched with .wiped so a refused reincarnation cannot re-fire on the next
+-- tick; the latch clears when Auto Prog is toggled.
+---------------------------------------------------------------------
+function _0xa299._0xProgWipe()
+    if _0xa299._0xProgBuild.wiped then return end
+    _0xa299._0xProgBuild.wiped = true
+
+    local DF = _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataFunction")
+    local DE = _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataEvent")
+
+    if _0xa299._0xProgBuild.useIronline then
+        -- No dialogue walk needed: this one has no resting precondition, so
+        -- the event is what the Iron Spirit's own option fires anyway.
+        pcall(function() DE:FireServer("queueIronline") end)
+        _0xa299._0x8545:Notify("Auto Prog", "Ironline queued", 3, "check")
+        task.wait(1)
+    end
+
+    _0xa299._0x8545:Notify("Auto Prog", "Wiping at age " .. tostring(_0xa299._0xProgBuild.wipeAge), 4, "warning")
+
+    -- The dialog option also calls GameManager:resetChakraPoints first, but
+    -- that is purely CLIENT-side bookkeeping for the chakra point UI - the
+    -- server never sees it, and GameManager is not reachable from here without
+    -- a gc scan, which would make this Volt-only. The remote below is the part
+    -- that actually reincarnates.
+    pcall(function() DF:InvokeServer("RequestReincarnation", "Male") end)
+end
+
 _0xa299._0xAutoProg = {
     enabled = false,
     selectedPoints = {},
@@ -28805,7 +29471,15 @@ function _0xa299._0xStartAutoProg()
             _0xa299._0xAutoProg.currentAge = _0xa299._0xGetPlayerAge()
             _0xa299._0xAutoProgDebug("WAITING_AGE", "Current age: " .. _0xa299._0xAutoProg.currentAge)
             _0xa299._0x8545:Notify("Auto Prog", "All quests done, waiting on age up (Current: " .. _0xa299._0xAutoProg.currentAge .. ")", 3, "check")
-            
+
+            -- BUILD MAXING. Done here because this is the dead window: the
+            -- quests for this age are finished and we are about to sit at the
+            -- safespot doing nothing until the age ticks over. Both are
+            -- internally rate-limited and latched, so running them on every
+            -- pass through here is cheap.
+            pcall(_0xa299._0xProgGeninExam)
+            pcall(_0xa299._0xProgSkillTreePass)
+
             if _0xa299._0x396d.Character and _0xa299._0x396d.Character:FindFirstChild("HumanoidRootPart") then
                 _0xa299._0x396d.Character.HumanoidRootPart.CFrame = _0xa299._0xdde4()
             end
@@ -28836,7 +29510,25 @@ function _0xa299._0xStartAutoProg()
                     if _0xa299._0x220a.spoofLoadingIn then
                         _0xa299._0x220a.applySpoofProtection()
                     end
+
                 end
+
+                -- TREE PASS, every time round the wait - not inside the point
+                -- break above.
+                --
+                -- It has to be unconditional for two reasons. Breaking a point
+                -- is where Chakra Shards come from and a shard gates the first
+                -- skill of three of the four paths, so a shard earned in the
+                -- branch above has to be spendable in the same age rather than
+                -- the next. And the item fetches have a two minute retry on
+                -- them, which only ever elapses if something keeps calling
+                -- them - sitting inside "ryo >= 100 and points selected" meant
+                -- a run with no points chosen never retried a missing bell at
+                -- all.
+                --
+                -- Internally rate-limited to one pass per 30s, so this costs
+                -- a table lookup on most iterations.
+                pcall(_0xa299._0xProgSkillTreePass)
 
                 -- Go back for the missions the board was not offering.
                 --
@@ -28883,6 +29575,21 @@ function _0xa299._0xStartAutoProg()
                 if newAge > _0xa299._0xAutoProg.currentAge then
                     ageChanged = true
                     _0xa299._0xAutoProgDebug("AGE_UP", _0xa299._0xAutoProg.currentAge .. " -> " .. newAge)
+
+                    -- A new age is a fresh shot at the exam.
+                    _0xa299._0xProgBuild.examTried = false
+
+                    -- WIPE AT AGE. Checked here rather than in the main loop so
+                    -- it fires once, on the transition, instead of every tick
+                    -- we happen to be 25 or older. Ironline is queued inside
+                    -- _0xProgWipe, before the reincarnation that consumes it.
+                    if _0xa299._0xProgBuild.wipeAt25
+                       and newAge >= _0xa299._0xProgBuild.wipeAge then
+                        task.spawn(function()
+                            pcall(_0xa299._0xProgWipe)
+                        end)
+                        return
+                    end
                     _0xa299._0xAutoProgUpdateGUI("autoprog_age_up", tostring(_0xa299._0xAutoProg.currentAge), tostring(newAge))
                     _0xa299._0x8545:Notify("Auto Prog", "Aged up " .. _0xa299._0xAutoProg.currentAge .. " -> " .. newAge, 3, "check")
                     
@@ -28967,6 +29674,11 @@ _0xa299._0xAutoProg.toggle = _0xa299._0xAPRG:AddToggle("Enable Auto Prog", false
     _0xa299._0xWM.set("FarmProg", Value)
     _0xa299._0xAutoProg.enabled = Value
     if Value then
+        -- Fresh run: let the wipe, the exam and every item fetch fire again.
+        _0xa299._0xProgBuild.wiped = false
+        _0xa299._0xProgBuild.examTried = false
+        _0xa299._0xProgItemRetry = {}
+        _0xa299._0xProgBuild.lastTreeRun = 0
         _0xa299._0xStartAutoProg()
         _0xa299._0x8545:Notify("Auto Prog", "Auto Prog enabled", 3, "check")
     else
@@ -28974,6 +29686,45 @@ _0xa299._0xAutoProg.toggle = _0xa299._0xAPRG:AddToggle("Enable Auto Prog", false
         _0xa299._0x8545:Notify("Auto Prog", "Auto Prog disabled", 3, "info")
     end
 end, {Flag = "AutoProgToggle", Type = "info", Text = "Auto complete quests and wait for age ups"})
+
+-- BUILD MAXING. The run these are for: max the build, hit the wipe age, wipe
+-- through Ironline for the bigger ember payout.
+do
+    local g = _0xa299._0xAutoProg.toggle:AddSettings("Build")
+
+    g:AddToggle("Auto Progress Skill Tree", false, function(Value)
+        _0xa299._0xProgBuild.skillTree = Value
+    end, {Flag = "ProgSkillTree", Type = "info", Text = "Unlocks your skill paths while waiting to age up"})
+
+    g:AddMultiDropdown("Skill Paths", {"Taijutsu", "Sealing", "Stamina", "Genjutsu"},
+        {"Taijutsu", "Sealing", "Stamina", "Genjutsu"}, function(Values)
+        local picked = {}
+        for _, name in ipairs(Values) do picked[name] = true end
+        _0xa299._0xProgBuild.paths = picked
+    end)
+
+    g:AddDivider()
+
+    g:AddToggle("Auto Genin Exam", false, function(Value)
+        _0xa299._0xProgBuild.geninExam = Value
+        if Value then _0xa299._0xProgBuild.examTried = false end
+    end, {Flag = "ProgGeninExam", Type = "info", Text = "Takes the Genin exam once you can"})
+
+    g:AddDivider()
+
+    g:AddToggle("Wipe At Age 25", false, function(Value)
+        _0xa299._0xProgBuild.wipeAt25 = Value
+        if Value then _0xa299._0xProgBuild.wiped = false end
+    end, {Flag = "ProgWipeAt25", Type = "warning", Text = "Reincarnates you the moment you hit the age below"})
+
+    g:AddSlider("Wipe Age", 10, 40, 25, function(Value)
+        _0xa299._0xProgBuild.wipeAge = Value
+    end)
+
+    g:AddToggle("Wipe Using Ironline", false, function(Value)
+        _0xa299._0xProgBuild.useIronline = Value
+    end, {Flag = "ProgIronline", Type = "warning", Text = "Wipes down the Ironline path for more embers"})
+end
 
 _0xa299._0xAutoProgQuests = {
     "Snow Hostage", "Passageway", "Shark Girl", "Mail", "Corrupted Point",
@@ -30345,7 +31096,7 @@ _0xa299._0xFRFS.bossRewardPositions = {
     Vector3.new(-3574.024, -389.077, -767.108), -- Isobu
     Vector3.new(-1032.42004, 262.756836, -1413.35388), -- Barbarit
     Vector3.new(-3786, -239.613, -9721.462), -- Haku Boss
-    Vector3.new(1605.68433, -487.562805, -7094.30664), -- Samurai (moved, 2026-10-23)
+    Vector3.new(4608.54541015625, 12.634588241577148, -10096.4814453125), -- Samurai (moved again, 2026-10-23)
 }
 
 function _0xa299._0xFRFG()
@@ -32229,11 +32980,16 @@ _0xa299._0x5ecb = {
     ["The Ringed Samurai"] = {
         workspaceName = "The Ringed Samurai",
         offset = 14,
-        spawnPosition = CFrame.new(4585.87695, 18.7208252, -10093.8076,
-            -1, 0, 0, 0, 1, 0, 0, 0, -1),
+        -- Updated 2026-10-23 (was 4585.9, 18.7, -10093.8 with a rotation).
+        -- Position only this time; which way we face to fire activateSamurai
+        -- does not matter.
+        spawnPosition = CFrame.new(4353.02490234375, 22.350616455078125, -10094.0712890625),
         rewards = "SamuraiRwards",
-        rewardspos = CFrame.new(1605.68433, -487.562805, -7094.30664,
-            0, 0, -1, 0, 1, 0, 1, 0, 0),
+        -- Updated 2026-10-23. This also closes the gap I flagged when the boss
+        -- was re-enabled: rewards used to sit ~3900 studs from the spawn, which
+        -- was unlike every other boss. It is now ~255 studs away, inside the
+        -- arena like the rest of them.
+        rewardspos = CFrame.new(4608.54541015625, 12.634588241577148, -10096.4814453125),
         spawnEvent = "activateSamurai",
         dangerAnim = "rbxassetid://9656290960",
         dangerAnimOffset = 2,
@@ -38846,8 +39602,8 @@ _0xa299._0x8d2d = {
     "Boss Mission",
     "Cratos",
     "Kurenai Genjutsu",
---    "Lava Snake",   -- DISABLED 2026-10-22
---    "Samurai",   -- DISABLED 2026-10-22
+    "Lava Snake",
+    "Samurai",
     "Combat Instructor",
     "Bolive Crops",
     "Manda Mission",
@@ -42094,28 +42850,79 @@ function _0xa299._0x9b94Run()
             _0xa299._0x8545:Notify("Quest", "Kurenai quest timed out (still not Finished)", 4, "warning")
         end
         
-    -- DISABLED 2026-10-22 at the user's request: the Lava Snake quest
-    -- ("Reaver's Revenge"). The Lava Snake boss itself was already removed
-    -- from the game and commented out on 2026-10-21.
---     elseif _0xa299._0x8434 == "Lava Snake" then
---         local args = {"StartQuest", "Reaver's Revenge", 2}
---         RS:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer(unpack(args))
---         task.wait(1)
---         local progressArgs = {"GetQuestProgress", "Reaver's Revenge"}
---         RS:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer(unpack(progressArgs))
---         _0xa299._0x8545:Notify("Quest", "Lava Snake quest completed", 3, "check")
-        
-    -- DISABLED 2026-10-22 at the user's request: the Samurai quest
-    -- ("Samurai's Retribution") is commented out along with Lava Snake and the
-    -- Unwipe feature, which is the only other thing that used it.
---     elseif _0xa299._0x8434 == "Samurai" then
---         local args = {"StartQuest", "Samurai's Retribution", 2}
---         RS:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer(unpack(args))
---         task.wait(1)
---         local progressArgs = {"GetQuestProgress", "Samurai's Retribution"}
---         RS:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer(unpack(progressArgs))
---         _0xa299._0x8545:Notify("Quest", "Samurai quest completed", 3, "check")
-        
+    -- RE-ENABLED 2026-10-23. Both were turned off on 2026-10-22 only because
+    -- their bosses had been removed from the game; the bosses are back, in new
+    -- areas, so the quests are valid again.
+    --
+    -- Both now TELEPORT to the quest's own spot before firing, which the old
+    -- versions did not do at all - they fired StartQuest from wherever you
+    -- happened to be standing. Positions are the user's measurements, and
+    -- these areas are thousands of studs out, so the travel goes through
+    -- _0xSTP (pre-streams the destination and holds position until the floor
+    -- exists) rather than a raw CFrame write that would drop us through the
+    -- map. We return to where we started afterwards.
+    --
+    -- Arg shapes are deliberately identical to the other ten quests in this
+    -- file: StartQuest with the trailing 2, and GetQuestProgress with no
+    -- "DontComplete" since we do want these to complete. Worth noting that
+    -- every StartQuest in the decompiled client passes only two arguments, so
+    -- the trailing 2 is ours - kept because it is what the working quests send
+    -- and consistency beats one-off guessing here.
+    elseif _0xa299._0x8434 == "Lava Snake" then
+        local checkResult = nil
+        pcall(function()
+            checkResult = RS:WaitForChild("Events"):WaitForChild("DataFunction")
+                :InvokeServer("GetQuestProgress", "Reaver's Revenge")
+        end)
+        if _0xa299._0xQDone(checkResult) then
+            _0xa299._0x8545:Notify("Quest", "Reaver's Revenge already done this age up", 3, "info")
+            return
+        end
+
+        -- Reuse the dispatcher's own startpos (line ~38876): it is the same
+        -- value, and it is what _0x0514() pins us to while being observed, so
+        -- a second copy could only drift from it.
+        _0xa299._0xSTP(CFrame.new(2652.072265625, 2.5936696529388428, -10546.4072265625))
+        task.wait(0.3)
+        if _0xa299._0x0514() then return end
+
+        local args = {"StartQuest", "Reaver's Revenge", 2}
+        RS:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer(unpack(args))
+        task.wait(1)
+        local progressArgs = {"GetQuestProgress", "Reaver's Revenge"}
+        RS:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer(unpack(progressArgs))
+
+        _0xa299._0xSTP(startpos)
+        _0xa299._0x8545:Notify("Quest", "Lava Snake quest completed", 3, "check")
+
+    elseif _0xa299._0x8434 == "Samurai" then
+        local checkResult = nil
+        pcall(function()
+            checkResult = RS:WaitForChild("Events"):WaitForChild("DataFunction")
+                :InvokeServer("GetQuestProgress", "Samurai's Retribution")
+        end)
+        if _0xa299._0xQDone(checkResult) then
+            _0xa299._0x8545:Notify("Quest", "Samurai's Retribution already done this age up", 3, "info")
+            return
+        end
+
+        -- Reuse the dispatcher's own startpos (line ~38876): it is the same
+        -- value, and it is what _0x0514() pins us to while being observed, so
+        -- a second copy could only drift from it.
+        _0xa299._0xSTP(CFrame.new(3781.582275390625, 170.34738159179688, -11087.712890625))
+        task.wait(0.3)
+        if _0xa299._0x0514() then return end
+
+        local args = {"StartQuest", "Samurai's Retribution", 2}
+        RS:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer(unpack(args))
+        task.wait(1)
+        local progressArgs = {"GetQuestProgress", "Samurai's Retribution"}
+        RS:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer(unpack(progressArgs))
+
+        _0xa299._0xSTP(startpos)
+        _0xa299._0x8545:Notify("Quest", "Samurai quest completed", 3, "check")
+
+
     elseif _0xa299._0x8434 == "Combat Instructor" then
         local questStartPos = plr.Character.HumanoidRootPart.CFrame
         local DataEvent = RS:WaitForChild("Events"):WaitForChild("DataEvent")
@@ -42299,12 +43106,22 @@ function _0xa299._0x9b94Run()
         -- drops 79-114 studs out, each with an `ID`, and nothing carried a
         -- ClearedToPickUp to distinguish them - so the owner check could not
         -- save it either.
+        -- An ItemDetector counts as well as an ID. This drop is taken by
+        -- CLICKING workspace["Broken Leaf Armor"].ItemDetector, not by the
+        -- ID + PickUp remote path, and requiring an uid=197609(gabpe) gid=197609 groups=197609 child here rejected
+        -- it outright - so the search never returned the armor even when it
+        -- was lying right there. Exact name is still the only thing that gets
+        -- a drop considered, which is the property that stopped this grabbing
+        -- stray apples.
         local function findArmorDrop()
             local best, bestD
             local char = _0xa299._0x396d.Character
             local hrp = char and char:FindFirstChild("HumanoidRootPart")
             for _, child in ipairs(workspace:GetChildren()) do
-                if child.Name == "Broken Leaf Armor" and child:FindFirstChild("ID") then
+                if child.Name == "Broken Leaf Armor"
+                   and (child:FindFirstChild("ItemDetector")
+                        or child:FindFirstChildOfClass("ClickDetector")
+                        or child:FindFirstChild("ID")) then
                     if not hrp then return child end
                     local p = _0xa299._0xInstancePos(child)
                     if not p then return child end
@@ -42315,11 +43132,49 @@ function _0xa299._0x9b94Run()
             return best
         end
 
+        -- ItemDetector first, PickUp remote only as a fallback.
+        --
+        -- Clicking the detector is how the game takes this drop, and it is the
+        -- same mechanism the Bells quest uses - including the part that is easy
+        -- to get wrong: the click does not register unless we are still ON the
+        -- item when it lands, so the position is held across the settle and the
+        -- confirmation rather than teleporting and leaving immediately.
         local function pickupBrokenLeafArmor()
             local drop = findArmorDrop()
             if not drop then return false end
 
             local name = drop.Name
+            local detector = drop:FindFirstChild("ItemDetector")
+                or drop:FindFirstChildOfClass("ClickDetector")
+
+            if detector then
+                local dropPos = _0xa299._0xInstancePos(drop)
+                local function holdAtDrop(seconds)
+                    local deadline = tick() + seconds
+                    repeat
+                        local hrp = _0xa299._0x396d.Character
+                            and _0xa299._0x396d.Character:FindFirstChild("HumanoidRootPart")
+                        if not hrp then return false end
+                        if dropPos then hrp.CFrame = CFrame.new(dropPos) end
+                        task.wait()
+                    until tick() > deadline
+                    return true
+                end
+
+                holdAtDrop(0.3)
+                pcall(function() fireclickdetector(detector) end)
+                holdAtDrop(0.4)
+
+                -- Confirm it actually left rather than announcing a pickup we
+                -- did not get.
+                if not drop.Parent then
+                    _0xa299._0x8545:Notify("Quest", "Picked up " .. name, 3, "check")
+                    return true
+                end
+                _0xa299._0xAutoProgDebug("PICKUP_FAILED", name .. ": detector fired, item still there")
+                return false
+            end
+
             local ok, why = _0xa299._0xPickUpDrop(drop)
             if ok then
                 _0xa299._0x8545:Notify("Quest", "Picked up " .. name, 3, "check")
