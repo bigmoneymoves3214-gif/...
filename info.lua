@@ -3583,11 +3583,37 @@ function _0xa299._0xSaveOriginalVisuals()
         
         _0xa299._0xOrigVisuals.effects = {}
         for _, effect in pairs(_0xa299._0x83af:GetChildren()) do
-            if effect:IsA("BlurEffect") or effect:IsA("ColorCorrectionEffect") or effect:IsA("DepthOfFieldEffect") then
+            if _0xa299._0xIsKillableEffect(effect) then
                 _0xa299._0xOrigVisuals.effects[effect] = effect.Enabled
             end
         end
     end)
+end
+
+---------------------------------------------------------------------
+-- OUR OWN LIGHTING EFFECTS
+--
+-- No Visual Effects sweeps Lighting and disables every Blur /
+-- ColorCorrection / DepthOfField it finds, in three places: this Heartbeat, a
+-- ChildAdded watcher, and the snapshot it restores from. The Saturation
+-- Booster's own ColorCorrectionEffect lives in Lighting too, so all three were
+-- switching it straight back off.
+--
+-- That is what the flicker was: dragging the Saturation slider re-enabled the
+-- effect on every callback, the next Heartbeat disabled it again, and once you
+-- let go of the slider nothing re-enabled it - so it settled OFF.
+--
+-- Anything we create ourselves goes in this set and the sweep skips it.
+---------------------------------------------------------------------
+_0xa299._0xOwnEffects = {
+    KyoSaturation = true,   -- Saturation Booster (Player > General Options > Display)
+}
+
+function _0xa299._0xIsKillableEffect(effect)
+    if _0xa299._0xOwnEffects[effect.Name] then return false end
+    return effect:IsA("BlurEffect")
+        or effect:IsA("ColorCorrectionEffect")
+        or effect:IsA("DepthOfFieldEffect")
 end
 
 function _0xa299._0x6d1a()
@@ -3609,7 +3635,7 @@ function _0xa299._0x6d1a()
         end
         
         for _, effect in pairs(_0xa299._0x83af:GetChildren()) do
-            if effect:IsA("BlurEffect") or effect:IsA("ColorCorrectionEffect") or effect:IsA("DepthOfFieldEffect") then
+            if _0xa299._0xIsKillableEffect(effect) then
                 effect.Enabled = false
             end
         end
@@ -3702,7 +3728,7 @@ _0xa299._0x4b83:AddToggle("No Visual Effects", false, function(Value)
         -- Watch for new effects being added/enabled
         table.insert(_0xa299._0xNoVisualConns, _0xa299._0x83af.ChildAdded:Connect(function(effect)
             if _0xa299._0xa6f6.noVisualEffects then
-                if effect:IsA("BlurEffect") or effect:IsA("ColorCorrectionEffect") or effect:IsA("DepthOfFieldEffect") then
+                if _0xa299._0xIsKillableEffect(effect) then
                     effect.Enabled = false
                 end
             end
