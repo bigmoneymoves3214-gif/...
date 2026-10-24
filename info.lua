@@ -32918,50 +32918,53 @@ function _0xa299._0xGaaraRoamPick(bossHrp)
     end
     return best
 end
-------------------------------------------------------------------------------------------------------------------------------------
--- COCOON ROAM (temporary / experimental)
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+-- FOUR-SPOT ROAM - TIMED AND COCOON MODES (both experimental)
 --
--- Behind a toggle so it can be compared against the normal roam ("V1", the
--- ten arena spots) rather than replacing it.
+-- Three anti-despawn roams now exist, each with its own toggle so they can
+-- be tried against each other. Precedence when more than one is on:
 --
--- V1: every 10s pick ONE spot, sit on it for 1s with the position re-pinned
--- every frame, come back.
--- This: do nothing at all until the SAND COCOON goes up, then hop around
--- four far spots every 0.3s for as long as it is up.
+--   cocoon  >  timed four-spot  >  V1 ten-spot
 --
--- Why the cocoon specifically. Sand Shield welds a shell to the boss and
--- ticks spikes out of it for ~5s; we cannot damage him through it and the
--- normal dodge just parks us at +38 studs waiting it out. So that window is
--- dead time we are free to move in, which makes it the cheapest place to
--- test whether moving is what keeps him from despawning - it costs no DPS
--- and it cannot pull us into a move we would otherwise have dodged.
+-- 1. V1 (_0xGaaraRoamV1, _0xGaaraRoamTick below): every 10s drop onto ONE
+--    of ten arena spots, hold it 1s with the position re-pinned every
+--    frame, come back. Spots are safety-checked against storms and rings.
 --
--- Two structural notes:
+-- 2. Timed four-spot (_0xGaaraRoamV2): every 10s, hop the four spots every
+--    0.3s for 2.5s, unpinned.
 --
--- * It writes CFrame ONCE per hop and then leaves the character alone: no
---   re-pinning, no velocity reset, nothing held. Between hops the character
---   falls and settles the way a player's would. Because nothing is pinned,
---   the farm has to stand aside entirely while this runs - one
---   `hrp.CFrame = hover` from the Heartbeat would undo the hop on the very
---   next frame. Hence the `running` flag instead of V1's "return a CFrame
---   for the farm to apply".
+-- 3. Cocoon four-spot (_0xGaaraCocoonRoam): the same hop, but only while
+--    the sand cocoon is up, for exactly as long as it is up.
 --
--- * Unlike V1 this does NOT stand down for an active dodge, because the
---   cocoon IS the active dodge. That is only safe because the spots sit
---   185-243 studs from his spawn, far outside the reach of anything he has
---   (the shield itself is radius 30), so being on one is strictly safer
---   than the +38 hover it replaces.
+-- The four-spot modes write CFrame ONCE per hop and then leave the
+-- character alone - no re-pinning, no velocity reset. Between hops it
+-- falls and settles the way a player's would. Because nothing is pinned,
+-- the farm has to stand aside entirely while a cycle runs: one
+-- `hrp.CFrame = hover` from the Heartbeat would undo the hop on the very
+-- next frame. Hence the `running` flag instead of V1's "return a CFrame
+-- for the farm to apply" shape.
+--
+-- IMPORTANT difference between the two four-spot modes. The timed one
+-- stands down for an active dodge; the cocoon one does NOT, because the
+-- cocoon IS the active dodge. That asymmetry is deliberate - see the spot
+-- list below for why it is safe in the cocoon case specifically.
 ---------------------------------------------------------------------
-_0xa299._0xGaaraRoamV2 = false     -- the toggle; V1 runs when this is off
+_0xa299._0xGaaraRoamV1 = true       -- the ten-spot roam (the original)
+_0xa299._0xGaaraRoamV2 = false      -- four spots on a timer
+_0xa299._0xGaaraCocoonRoam = false  -- four spots while the cocoon is up
 
 -- The user's measured positions, used as given.
 --
--- Worth knowing before these get reused anywhere else: all four are OUTSIDE
--- Gaara's leash. His config sets MaxDistanceFromSpawn = 180 and these are
+-- Worth knowing before these are trusted: all four are OUTSIDE Gaara's
+-- leash. His config sets MaxDistanceFromSpawn = 180 and these are
 -- 185/232/243/233 studs from his recorded spawn (5886.35, -173.05, 624.11),
--- three of them also past his DamageImmunityRange of 200. Harmless for a
--- cocoon-only roam - he is stationary and untouchable through it anyway -
--- but it is why they must NOT drive a roam that runs during damage uptime.
+-- three of them also past his DamageImmunityRange of 200.
+--
+-- That is harmless in COCOON mode - he is stationary and untouchable
+-- through the shield anyway - and it is also why a spot is safe to sit on
+-- mid-cocoon without the dodge. In TIMED mode it is a real cost: 2.5s of
+-- every 10s spent somewhere he cannot follow and mostly cannot be damaged
+-- from. V1's ten spots are all within 142 studs by comparison.
 _0xa299._0xGaaraV2Spots = {
     Vector3.new(6004.06787109375, -84.19886016845703, 511.98199462890625),
     Vector3.new(5747.619140625, -128.16392517089844, 804.356201171875),
@@ -32969,15 +32972,19 @@ _0xa299._0xGaaraV2Spots = {
     Vector3.new(6003.638671875, -135.8954315185547, 822.1117553710938),
 }
 
-_0xa299._0xGaaraV2Step = 0.3       -- seconds between hops
+_0xa299._0xGaaraV2Step  = 0.3       -- seconds between hops (both modes)
+_0xa299._0xGaaraV2Total = 2.5       -- timed mode: length of one cycle
+_0xa299._0xGaaraV2Every = 10        -- timed mode: seconds between starts
 
-_0xa299._0xGaaraV2 = { running = false, abort = false }
+-- `mode` is "timed" or "cocoon", so the tick can tell whether a cycle
+-- already in flight is the one the current conditions call for.
+_0xa299._0xGaaraV2 = { running = false, abort = false, nextAt = 0, mode = nil }
 
 -- Are we currently choosing to block a sand storm rather than leave?
 --
--- The farm keeps attacking, dashing and charging straight through this - the
--- whole point is not losing the move's damage uptime. Worth knowing what that
--- means, since it is a deliberate trade rather than an oversight:
+-- The farm keeps attacking, dashing and charging straight through this -
+-- the whole point is not losing the move's damage uptime. Worth knowing
+-- what that means, since it is a deliberate trade rather than an oversight:
 --   * The real client refuses to M1 (client 10427) or dash (11798) while
 --     Blocking is true, so firing them anyway is a combination a legitimate
 --     client never sends. Accepted knowingly.
@@ -32999,8 +33006,8 @@ end
 --
 -- The latch matters: without it a 60 Hz caller would queue dozens of
 -- overlapping invokes while the first was still in flight, and the server
--- call is a TOGGLE pair with EndBlock - a pile of them is exactly how you end
--- up blocking and unblocking instead of holding.
+-- call is a TOGGLE pair with EndBlock - a pile of them is exactly how you
+-- end up blocking and unblocking instead of holding.
 _0xa299._0xBlockAsserting = false
 function _0xa299._0xAssertBlock()
     if _0xa299._0xBlockAsserting then return end
@@ -33034,27 +33041,37 @@ function _0xa299._0xGaaraCocoonUp()
     return (S.shield ~= nil) or (tick() < (S.shieldUntil or 0))
 end
 
--- The cycle. Runs as its own task so the Heartbeat is never blocked, and
--- lives exactly as long as the cocoon does rather than for a fixed time.
-function _0xa299._0xGaaraV2Run()
+-- One cycle of the four-spot hop. Runs as its own task so the Heartbeat is
+-- never blocked. `mode` decides what ends it: a 2.5s deadline, or the
+-- cocoon dropping.
+function _0xa299._0xGaaraV2Run(mode)
     local V = _0xa299._0xGaaraV2
     local spots = _0xa299._0xGaaraV2Spots
     if #spots == 0 then
         V.running = false
+        V.mode = nil
         return
     end
 
     V.abort = false
+    V.mode = mode
 
+    local deadline = if mode == "timed" then tick() + _0xa299._0xGaaraV2Total else nil
     local i = 0
+
     while true do
-        -- Bail on anything that means we should not be out here: the cocoon
-        -- dropping, the farm stopping, or the toggle being flipped.
-        if V.abort
-           or not _0xa299._0xGaaraRoamV2
-           or not (_0xa299._0x1915 and _0xa299._0x1915.farming)
-           or not _0xa299._0xGaaraCocoonUp() then
+        if V.abort or not (_0xa299._0x1915 and _0xa299._0x1915.farming) then
             break
+        end
+
+        -- Each mode owns its own end condition AND its own toggle, so
+        -- flipping either one off mid-cycle hands positioning straight back.
+        if mode == "cocoon" then
+            if not _0xa299._0xGaaraCocoonRoam then break end
+            if not _0xa299._0xGaaraCocoonUp() then break end
+        else
+            if not _0xa299._0xGaaraRoamV2 then break end
+            if deadline and tick() >= deadline then break end
         end
 
         local char = _0xa299._0x396d.Character
@@ -33073,31 +33090,72 @@ function _0xa299._0xGaaraV2Run()
     end
 
     V.running = false
+    V.mode = nil
 end
 
 -- Returns true if the farm should leave positioning alone this frame.
 --
 -- Note it returns true WITHOUT giving the farm a CFrame, which is the whole
 -- point: the caller must simply not touch hrp.CFrame while this is true.
-function _0xa299._0xGaaraV2Tick()
+function _0xa299._0xGaaraV2Tick(dangerActive)
     local V = _0xa299._0xGaaraV2
 
-    if not _0xa299._0xGaaraCocoonUp() then
-        -- Cocoon gone: stop the cycle and hand positioning straight back so
-        -- the farm is on him for the first frame he is hittable again.
+    -- COCOON MODE. Outranks the timed one: these spots were picked for this
+    -- window, and it is the only window where sitting outside his leash
+    -- costs nothing. Deliberately ignores dangerActive - the cocoon IS the
+    -- danger, and a spot 185+ studs out is strictly safer than the +38
+    -- hover the dodge would otherwise ask for.
+    if _0xa299._0xGaaraCocoonRoam and _0xa299._0xGaaraCocoonUp() then
+        if V.running then
+            -- A timed cycle caught mid-flight has to give way, but it owns
+            -- the character until its own loop notices. Hold the farm off
+            -- for this frame either way.
+            if V.mode ~= "cocoon" then V.abort = true end
+            return true
+        end
+        V.running = true
+        task.spawn(_0xa299._0xGaaraV2Run, "cocoon")
+        return true
+    end
+
+    -- A cocoon cycle that has outlived its cocoon: end it and give
+    -- positioning back, so the farm is on him for the first frame he is
+    -- hittable again.
+    if V.running and V.mode == "cocoon" then
+        V.abort = true
+        return false
+    end
+
+    -- TIMED MODE.
+    if not _0xa299._0xGaaraRoamV2 then
+        if V.running then V.abort = true end
+        return false
+    end
+
+    -- Unlike the cocoon case a dodge DOES outrank this, because it can fire
+    -- at any point in the fight: these spots are not chosen for safety, and
+    -- sitting on one mid-coffin is exactly what the dodge exists to prevent.
+    if dangerActive then
         if V.running then V.abort = true end
         return false
     end
 
     if V.running then return true end
 
-    -- Latch BEFORE spawning. task.spawn runs synchronously up to the first
-    -- yield so in practice the flag would be set before this returned, but
-    -- relying on that is exactly what would let a second Heartbeat frame
-    -- start a second cycle.
-    V.running = true
-    task.spawn(_0xa299._0xGaaraV2Run)
-    return true
+    local now = tick()
+    if now >= V.nextAt then
+        -- Claim the next window before spawning. This is the only place it is
+        -- ADVANCED (the toggle zeroes it so re-enabling starts a cycle at
+        -- once), so the period runs start-to-start rather than from whenever
+        -- a cycle happens to finish - and it also stops a second Heartbeat
+        -- frame starting a second cycle.
+        V.nextAt = now + _0xa299._0xGaaraV2Every
+        V.running = true
+        task.spawn(_0xa299._0xGaaraV2Run, "timed")
+        return true
+    end
+
+    return false
 end
 
 -- Returns a CFrame to sit at this frame, or nil to let the farm hover.
@@ -36429,22 +36487,23 @@ function _0xa299._0xa94c()
                 _0xa299._0xAssertBlock()
             end
 
-            -- Anti-despawn roam. Two versions, picked by the toggle.
+            -- Anti-despawn roam. Three of them, each independently toggled;
+            -- precedence is cocoon > timed four-spot > V1 ten-spot. See the
+            -- block above _0xGaaraV2Tick.
             --
-            -- The cocoon roam does NOT hand back a CFrame - it drives the
-            -- character from its own task and only tells us to keep our hands
-            -- off. That is the entire reason it is shaped differently:
-            -- writing a hover here would undo its hop on the very next frame.
+            -- The four-spot modes do NOT hand back a CFrame - they drive the
+            -- character from their own task and only tell us to keep our hands
+            -- off. That is why they are shaped differently from V1: writing a
+            -- hover here would undo their hop on the very next frame.
             --
-            -- It also deliberately REPLACES V1 rather than running alongside
-            -- it. V1's timed roam firing in the same fight would leave two
-            -- different movement patterns in play and no way to tell which one
-            -- mattered, which defeats the point of testing this.
-            if _0xa299._0xGaaraRoamV2 then
-                if _0xa299._0xGaaraV2Tick() then
-                    return
-                end
-            else
+            -- Enabling more than one is allowed on purpose so they can be
+            -- compared, but it does mean two movement patterns in one fight -
+            -- for a clean read on which one matters, run one at a time.
+            if _0xa299._0xGaaraV2Tick(dangerOverride ~= nil) then
+                return
+            end
+
+            if _0xa299._0xGaaraRoamV1 then
                 -- V1: sit on one arena spot for a second, position re-pinned
                 -- every frame. See _0xa299._0xGaaraRoamTick.
                 local roamCF = _0xa299._0xGaaraRoamTick(bossHrp, dangerOverride ~= nil)
@@ -36908,18 +36967,41 @@ _0xa299._0xf02e:AddToggle("Auto Hyper Roar", false, function(Value)
     end)
 end, {Type = "info", Text = "Uses Hyper Roar while boss farming"})
 
--- TEMPORARY / EXPERIMENTAL. Replaces Gaara's timed anti-despawn roam with a
--- cocoon-only one: while the sand shield is up, hop around four far spots
--- every 0.3s, unpinned, then go straight back to him. Costs no damage uptime
--- because he cannot be hurt through the shield anyway.
-_0xa299._0x1915.settings:AddToggle("Gaara Cocoon Roam (test)", false, function(Value)
+-- GAARA ANTI-DESPAWN ROAMS. Three of them, independently toggled so they can
+-- be tried against each other; precedence when more than one is on is
+-- cocoon > timed four-spot > V1. All experimental except V1, which is the
+-- long-standing behaviour and therefore the only one defaulted on.
+--
+-- For a clean read on which one actually helps, run ONE at a time - two
+-- movement patterns in one fight tells you nothing about either.
+_0xa299._0x1915.settings:AddToggle("Gaara Safe Spot Roam", true, function(Value)
+    _0xa299._0xGaaraRoamV1 = Value
+    -- Drop a hold in progress, so flipping this off puts us back on him now
+    -- rather than at the end of the current second.
+    if not Value then
+        _0xa299._0xGaaraRoam.doneAt = 0
+        _0xa299._0xGaaraRoam.target = nil
+        _0xa299._0xGaaraRoam.spot = nil
+    end
+end, {Flag = "GaaraRoamV1", Type = "info", Text = "Drops onto a safe arena spot for a second now and then"})
+
+_0xa299._0x1915.settings:AddToggle("Gaara Roam V2 (test)", false, function(Value)
     _0xa299._0xGaaraRoamV2 = Value
-    -- Stop a cycle that is already mid-flight, so flipping this off hands
-    -- positioning straight back rather than at the end of the cocoon.
-    if not Value and _0xa299._0xGaaraV2.running then
+    -- Only abort a cycle that belongs to THIS mode - the cocoon roam shares
+    -- the same runner, and killing its cycle from here would drop us back on
+    -- the boss mid-shield.
+    if not Value and _0xa299._0xGaaraV2.running and _0xa299._0xGaaraV2.mode == "timed" then
         _0xa299._0xGaaraV2.abort = true
     end
-end, {Flag = "GaaraRoamV2", Type = "warning", Text = "Moves around while Gaara is in his sand cocoon"})
+    _0xa299._0xGaaraV2.nextAt = 0
+end, {Flag = "GaaraRoamV2", Type = "warning", Text = "Cycles four spots every few seconds instead of one"})
+
+_0xa299._0x1915.settings:AddToggle("Gaara Cocoon Roam (test)", false, function(Value)
+    _0xa299._0xGaaraCocoonRoam = Value
+    if not Value and _0xa299._0xGaaraV2.running and _0xa299._0xGaaraV2.mode == "cocoon" then
+        _0xa299._0xGaaraV2.abort = true
+    end
+end, {Flag = "GaaraCocoonRoam", Type = "warning", Text = "Moves around while Gaara is in his sand cocoon"})
 
 -- TAILED BEASTS. All of this came over from the standalone Tailed Beast Farm
 -- when it was folded into the boss farm; the targeting and seal options get a
