@@ -27872,8 +27872,25 @@ _0xa299._0x5d7f = {
     enabled = false,
     connection = nil,
     noclipConnection = nil,
-    waitingConnection = nil
+    waitingConnection = nil,
+    holdConnection = nil,  -- _0x52ba's per-frame crop pin, so a stop can cut it
+    runId = 0,             -- generation; a restart must not revive the old loops
+    busy = 0,              -- >0 while a loop is actively moving the character
 }
+
+-- Does this farm loop still own the farm?
+function _0xa299._0xRyoAlive(runId)
+    if not _0xa299._0x5d7f.enabled then return false end
+    if runId ~= nil and _0xa299._0x5d7f.runId ~= runId then return false end
+    return true
+end
+
+-- Bracket anything that drives the character. _0xProgRyoStop waits for this to
+-- reach 0 before letting Auto Prog have the body back, so a half-finished
+-- teleport cannot land after Auto Prog has already moved us.
+function _0xa299._0xRyoBusy(delta)
+    _0xa299._0x5d7f.busy = math.max(0, (_0xa299._0x5d7f.busy or 0) + delta)
+end
 
 function _0xa299._0x52ba(crop, times)
     local character = _0xa299._0x396d.Character or _0xa299._0x396d.CharacterAdded:Wait()
@@ -27889,24 +27906,62 @@ function _0xa299._0x52ba(crop, times)
     humanoid.PlatformStand = true
     hrp.CFrame = holdCF
 
+    -- ABORTABLE. This used to run blind for ~1.3 s and then teleport the
+    -- character back to lastPosition no matter what - so stopping the farm
+    -- mid-water meant the pin kept fighting whatever moved us next and then,
+    -- a second later, yanked us back to the crop field. That is the "it keeps
+    -- teleporting back" glitch.
+    --
+    -- Now: the pin checks the farm is still live, the connection is registered
+    -- where _0x7b65 can cut it, the waits poll instead of blocking for a
+    -- second, and an aborted run does NOT restore the old position - whoever
+    -- stopped us has their own plans for where we stand.
+    _0xa299._0xRyoBusy(1)
+
     local hold = true
+    local function stillOurs()
+        return hold and _0xa299._0x5d7f.enabled
+    end
+
     local holdConn = _0xa299._0x64b8.Heartbeat:Connect(function()
-        if not hold or not hrp.Parent then return end
+        if not stillOurs() or not hrp.Parent then return end
         hrp.CFrame = holdCF
         _0xa299._0xVelSettle(hrp)
     end)
+    _0xa299._0x5d7f.holdConnection = holdConn
 
-    task.wait(0.2)
-    for b = 1, times, 1 do
-        _0xa299._0xe08d.Events.DataEvent:FireServer("WaterTheCrops", "Freshwater Bowl")
+    -- Poll in small steps so a stop is noticed in a frame or two, not a second.
+    local function holdFor(seconds)
+        local deadline = tick() + seconds
+        while tick() < deadline do
+            if not _0xa299._0x5d7f.enabled then return false end
+            task.wait(0.05)
+        end
+        return true
     end
 
-    task.wait(1)
+    local finished = false
+    if holdFor(0.2) then
+        for _ = 1, times, 1 do
+            if not _0xa299._0x5d7f.enabled then break end
+            _0xa299._0xe08d.Events.DataEvent:FireServer("WaterTheCrops", "Freshwater Bowl")
+        end
+        finished = holdFor(1)
+    end
+
     hold = false
-    holdConn:Disconnect()
+    pcall(function() holdConn:Disconnect() end)
+    if _0xa299._0x5d7f.holdConnection == holdConn then
+        _0xa299._0x5d7f.holdConnection = nil
+    end
     humanoid.PlatformStand = false
-    task.wait(0.1)
-    hrp.CFrame = lastPosition
+
+    if finished then
+        task.wait(0.1)
+        hrp.CFrame = lastPosition
+    end
+
+    _0xa299._0xRyoBusy(-1)
 end
 
 function _0xa299._0x5f8a()
@@ -27920,13 +27975,27 @@ end
 
 function _0xa299._0xb795()
     if not _0xa299._0x5d7f.enabled then return end
+
+    -- GENERATION. Every start takes a new number and the loops below only keep
+    -- going while they hold it.
+    --
+    -- Without this, restarting the farm LEAKED THREADS. _0x7b65 flips .enabled
+    -- false and the two loops exit at their next check - but Auto Prog stops and
+    -- restarts this farm around every bit of positional work it does (the tree
+    -- pass alone, every 30 s), and a restart sets .enabled true again before the
+    -- old loops had got to that check. They then carried on, and _0xb795 spawned
+    -- two MORE. After a few age-wait cycles a dozen threads were teleporting the
+    -- character to different crops and oranges at once, which is what the
+    -- glitching was.
+    _0xa299._0x5d7f.runId = (_0xa299._0x5d7f.runId or 0) + 1
+    local myRun = _0xa299._0x5d7f.runId
     
     local char = _0xa299._0x396d.Character or _0xa299._0x396d.CharacterAdded:Wait()
     local isWatering = false
     local isInSafeMode = false
     
     task.spawn(function()
-        while _0xa299._0x5d7f.enabled do
+        while _0xa299._0xRyoAlive(myRun) do
             pcall(function()
                 -- Check if being observed by Chakra Sense
                 if _0xa299._0x6378 then
@@ -27942,14 +28011,14 @@ function _0xa299._0xb795()
                         end
                     end
                     
-                    while _0xa299._0x6378 and _0xa299._0x5d7f.enabled do
+                    while _0xa299._0x6378 and _0xa299._0xRyoAlive(myRun) do
                         if char and char:FindFirstChild("HumanoidRootPart") then
                             char.HumanoidRootPart.CFrame = _0xa299._0xdde4()
                         end
                         task.wait(0.5)
                     end
                     
-                    if _0xa299._0x5d7f.enabled then
+                    if _0xa299._0xRyoAlive(myRun) then
                         isInSafeMode = false
                         -- Remove spoof protection when threat is gone
                         _0xa299._0x220a.removeSpoofProtection()
@@ -27957,7 +28026,7 @@ function _0xa299._0xb795()
                     end
                 end
                 
-                if not _0xa299._0x5d7f.enabled then return end
+                if not _0xa299._0xRyoAlive(myRun) then return end
                 
                 local orangethere, bowlthere = false, false
 
@@ -28074,7 +28143,7 @@ function _0xa299._0xb795()
     _0xa299._0x5d7f.noclipConnection = _0xa299._0x64b8.Stepped:Connect(nocliploop)
 
     task.spawn(function()
-        while _0xa299._0x5d7f.enabled do
+        while _0xa299._0xRyoAlive(myRun) do
             -- Check if being observed by Chakra Sense
             if _0xa299._0x6378 then
                 if not isInSafeMode then
@@ -28085,14 +28154,14 @@ function _0xa299._0xb795()
                     end
                 end
                 
-                while _0xa299._0x6378 and _0xa299._0x5d7f.enabled do
+                while _0xa299._0x6378 and _0xa299._0xRyoAlive(myRun) do
                     if char and char:FindFirstChild("HumanoidRootPart") then
                         char.HumanoidRootPart.CFrame = _0xa299._0xdde4()
                     end
                     task.wait(0.5)
                 end
                 
-                if _0xa299._0x5d7f.enabled then
+                if _0xa299._0xRyoAlive(myRun) then
                     isInSafeMode = false
                     _0xa299._0x8545:Notify("Farm", "Back to orange collection", 3, "check")
                 end
@@ -28101,12 +28170,12 @@ function _0xa299._0xb795()
             -- Wait here until watering is done
             if isWatering then
                 while isWatering do
-                    if not _0xa299._0x5d7f.enabled then break end
+                    if not _0xa299._0xRyoAlive(myRun) then break end
                     task.wait()
                 end
             end
 
-            if not _0xa299._0x5d7f.enabled then break end
+            if not _0xa299._0xRyoAlive(myRun) then break end
 
             -- Build orange tree cache once per cycle instead of scanning every frame
             local orangeTrees = {}
@@ -28117,7 +28186,7 @@ function _0xa299._0xb795()
             end
 
             for _, v in ipairs(orangeTrees) do
-                if not _0xa299._0x5d7f.enabled then break end
+                if not _0xa299._0xRyoAlive(myRun) then break end
                 if _0xa299._0x6378 then
                     if char and char:FindFirstChild("HumanoidRootPart") then
                         char.HumanoidRootPart.CFrame = _0xa299._0xdde4()
@@ -28143,7 +28212,7 @@ function _0xa299._0xb795()
 
                     local timeout = os.clock() + 12
                     while os.clock() < timeout and not spawned do
-                        if not _0xa299._0x5d7f.enabled then break end
+                        if not _0xa299._0xRyoAlive(myRun) then break end
                         
                         if _0xa299._0x6378 then
                             if char and char:FindFirstChild("HumanoidRootPart") then
@@ -28159,6 +28228,9 @@ function _0xa299._0xb795()
                     v:SetAttribute("orange", true)
                     
                     if spawned and #pickuptable > 0 then
+                        -- Collecting means teleporting from orange to orange,
+                        -- so hold the body until the run is finished with it.
+                        _0xa299._0xRyoBusy(1)
                         local bv = Instance.new("BodyVelocity")
                         -- named from the game's own u32.ABV allowlist, else HRP.ChildAdded
                         -- self-reports BanMe "Offense 1E" (default name "BodyVelocity" is not allowed)
@@ -28168,7 +28240,7 @@ function _0xa299._0xb795()
                         bv.Parent = char:FindFirstChild("HumanoidRootPart")
 
                         for _, fruit in ipairs(pickuptable) do
-                            if not _0xa299._0x5d7f.enabled then break end
+                            if not _0xa299._0xRyoAlive(myRun) then break end
                             
                             if _0xa299._0x6378 then
                                 bv:Destroy()
@@ -28183,7 +28255,7 @@ function _0xa299._0xb795()
                                     char.HumanoidRootPart.CFrame = fruit.CFrame * CFrame.new(0, -6, 0)
                                 end)
                                 while fruit and fruit:IsDescendantOf(workspace) do
-                                    if not _0xa299._0x5d7f.enabled then break end
+                                    if not _0xa299._0xRyoAlive(myRun) then break end
                                     
                                     if _0xa299._0x6378 then
                                         if char and char:FindFirstChild("HumanoidRootPart") then
@@ -28200,6 +28272,7 @@ function _0xa299._0xb795()
 
                         table.clear(pickuptable)
                         bv:Destroy()
+                        _0xa299._0xRyoBusy(-1)
                         task.wait()
                     end
                     
@@ -28209,7 +28282,7 @@ function _0xa299._0xb795()
 
             -- Reset orange attributes for next cycle
             for _, v in ipairs(orangeTrees) do
-                if not _0xa299._0x5d7f.enabled then break end
+                if not _0xa299._0xRyoAlive(myRun) then break end
                 if v:GetAttribute("orange") then
                     v:SetAttribute("orange", false)
                 end
@@ -28225,6 +28298,36 @@ end
 
 function _0xa299._0x7b65()
     _0xa299._0x5d7f.enabled = false
+
+    -- Bump the generation too, so anything still mid-iteration fails its next
+    -- check even if the farm is turned straight back on.
+    _0xa299._0x5d7f.runId = (_0xa299._0x5d7f.runId or 0) + 1
+
+    -- The crop pin is a per-frame CFrame write and used to be a local inside
+    -- _0x52ba, i.e. unreachable from here - it kept writing for over a second
+    -- after the farm was "stopped".
+    if _0xa299._0x5d7f.holdConnection then
+        pcall(function() _0xa299._0x5d7f.holdConnection:Disconnect() end)
+        _0xa299._0x5d7f.holdConnection = nil
+    end
+
+    -- _0x52ba sets PlatformStand to pin to a crop. Left on, the character
+    -- cannot stand or sit properly afterwards, which broke the chakra point
+    -- sit the skill tree pass needs.
+    pcall(function()
+        local hum = _0xa299._0x396d.Character
+            and _0xa299._0x396d.Character:FindFirstChildOfClass("Humanoid")
+        if hum then hum.PlatformStand = false end
+    end)
+
+    -- And the collection mover, in case we stopped inside that block.
+    pcall(function()
+        local hrp = _0xa299._0x396d.Character
+            and _0xa299._0x396d.Character:FindFirstChild("HumanoidRootPart")
+        local bv = hrp and hrp:FindFirstChild("DirectionalBV")
+        if bv then bv:Destroy() end
+    end)
+
     if _0xa299._0x5d7f.connection then
         _0xa299._0x5d7f.connection:Disconnect()
         _0xa299._0x5d7f.connection = nil
@@ -28343,6 +28446,7 @@ function _0xa299._0xProgRyoStart()
     -- Do not start a farm into a threat; the hide happens a moment later.
     if not _0xa299._0xAutoProgCheckSafety() then return false end
 
+
     _0xa299._0xProgRyoOwned = true
     _0xa299._0x5d7f.enabled = true
     if not _0xa299._0xa6f6.noFallDamage then
@@ -28354,10 +28458,35 @@ function _0xa299._0xProgRyoStart()
 end
 
 -- Safe to call at any time; does nothing unless we are the ones farming.
+--
+-- BLOCKS until the farm has genuinely let go of the character. That matters:
+-- the farm's loops can be mid-teleport when .enabled flips, and a write that
+-- lands a frame after Auto Prog has moved us is exactly the fight the user was
+-- seeing - the skill tree pass sitting at a point only to be dragged to a crop,
+-- a deferred quest being pulled off course. _0xRyoBusy brackets every section
+-- that drives the body, so waiting for it to reach 0 is waiting for the farm to
+-- be out of the way.
+_0xa299._0xProgRyoReleaseWait = 2.5
+
 function _0xa299._0xProgRyoStop()
     if not _0xa299._0xProgRyoOwned then return end
     _0xa299._0xProgRyoOwned = false
     pcall(_0xa299._0x7b65)
+
+    local deadline = tick() + _0xa299._0xProgRyoReleaseWait
+    while (_0xa299._0x5d7f.busy or 0) > 0 and tick() < deadline do
+        task.wait(0.05)
+    end
+
+    if (_0xa299._0x5d7f.busy or 0) > 0 then
+        -- Should not happen - every bracket is closed in the same scope it was
+        -- opened - but a stuck counter must not block the farm forever.
+        _0xa299._0xAutoProgDebug("RYO_FARM", "release timed out, clearing")
+        _0xa299._0x5d7f.busy = 0
+    end
+
+    -- One frame for the last CFrame write to settle before the caller moves us.
+    task.wait()
     _0xa299._0xAutoProgDebug("RYO_FARM", "stopped")
 end
 
@@ -28860,12 +28989,62 @@ end
 -- is taken as "not yet", which is also how the game's own button behaves.
 -- Data is re-read after each success so the next skill sees the spend.
 ---------------------------------------------------------------------
-_0xa299._0xProgTreeEvery = 30   -- seconds between passes
+-- TWO gates, not one.
+--
+-- lastTreeRun is the gap between actual SIT-DOWNS (or item trips) - the
+-- expensive part. _0xProgTreeChecked is the gap between cheap "is there
+-- anything to do and can we afford it" looks, which read local data and a
+-- cached price table and cost nothing.
+--
+-- They were the same gate, and that was wrong once the Ryo farm existed: a pass
+-- that found nothing affordable still burned the 30 seconds, so Ryo arriving a
+-- second later sat unspent for another 29.
+_0xa299._0xProgTreeEvery = 30
+_0xa299._0xProgTreeCheckEvery = 3
+_0xa299._0xProgTreeChecked = 0
+
+-- What a skill costs, straight off GameManager.Skills[name].Requirements.Ryo.
+-- Cached: the table is static for the session.
+_0xa299._0xSkillCost = {}
+
+function _0xa299._0xProgSkillCost(skillName)
+    local cached = _0xa299._0xSkillCost[skillName]
+    if cached ~= nil then return cached end
+
+    local cost = nil
+    pcall(function()
+        local GM = require(_0xa299._0xe08d:WaitForChild("GameManager"))
+        local def = GM.Skills and GM.Skills[skillName]
+        local req = def and def.Requirements
+        cost = req and (tonumber(req.Ryo) or 0) or 0
+    end)
+    if cost == nil then return nil end   -- unreadable: treat as "might be free"
+
+    _0xa299._0xSkillCost[skillName] = cost
+    return cost
+end
+
+-- Is a gating item missing AND actually worth a trip? Chakra Shards and
+-- Fragments are excluded because nothing can be fetched for them - they come
+-- from breaking points and from mission rewards - and an item still inside its
+-- two minute retry window is not worth interrupting the farm for either.
+function _0xa299._0xProgFetchableItem(data, skillName)
+    local gates = _0xa299._0xSkillItemGate[skillName]
+    if not gates then return false end
+    for _, itemName in ipairs(gates) do
+        if itemName ~= "Chakra Shard" and itemName ~= "Chakra Fragments"
+           and _0xa299._0xCountItem(data, itemName) <= 0
+           and _0xa299._0xProgItemReady(itemName) then
+            return true
+        end
+    end
+    return false
+end
 
 function _0xa299._0xProgSkillTreePass()
     if not _0xa299._0xProgBuild.skillTree then return end
-    if (tick() - _0xa299._0xProgBuild.lastTreeRun) < _0xa299._0xProgTreeEvery then return end
-    _0xa299._0xProgBuild.lastTreeRun = tick()
+    if (tick() - _0xa299._0xProgTreeChecked) < _0xa299._0xProgTreeCheckEvery then return end
+    _0xa299._0xProgTreeChecked = tick()
 
     local data = _0xa299._0xLocalData and _0xa299._0xLocalData() or nil
     if type(data) ~= "table" then
@@ -28901,12 +29080,65 @@ function _0xa299._0xProgSkillTreePass()
     end
     if #wanted == 0 then return end
 
+    -- CAN WE ACTUALLY BUY ANYTHING RIGHT NOW?
+    --
+    -- This pass used to be a plain 30 second timer, which was fine while the
+    -- run just sat at the safespot - a wasted sit-down cost nothing. With the
+    -- Ryo farm running it is not fine: it paused farming, travelled to a chakra
+    -- point, sat, got refused for want of Ryo, stood up and went back, every 30
+    -- seconds forever. So the price comes first and the farm is only
+    -- interrupted when there is something to spend on.
+    local ryoNow = _0xa299._0xAutoProgGetRyo()
+    local affordable = false
+    for _, entry in ipairs(wanted) do
+        local cost = _0xa299._0xProgSkillCost(entry[2])
+        if cost == nil or ryoNow >= cost then
+            affordable = true
+            break
+        end
+    end
+
+    if not affordable then
+        -- Short of Ryo. A path blocked on a SCROLL rather than money is still
+        -- worth acting on, though - that is a quest to run, not a purchase - so
+        -- check for one before giving the window back to the farm.
+        local fetch = false
+        for _, entry in ipairs(wanted) do
+            if _0xa299._0xProgFetchableItem(data, entry[2]) then
+                fetch = true
+                break
+            end
+        end
+        if not fetch then return end
+        if (tick() - _0xa299._0xProgBuild.lastTreeRun) < _0xa299._0xProgTreeEvery then return end
+        _0xa299._0xProgBuild.lastTreeRun = tick()
+
+        _0xa299._0xProgRyoStop()
+        for _, entry in ipairs(wanted) do
+            if not _0xa299._0xProgBuild.skillTree then break end
+            local got = false
+            pcall(function()
+                got = _0xa299._0xProgAcquireFor(data, entry[2])
+            end)
+            if got then
+                -- Something arrived, so come straight back rather than idling
+                -- another 30s.
+                _0xa299._0xProgBuild.lastTreeRun = 0
+                _0xa299._0xProgTreeChecked = 0
+                return
+            end
+        end
+        return
+    end
+
     local point = _0xa299._0xChakraPointCurrent()
     if not point then
         point = workspace:FindFirstChild("ChakraPoints")
         point = point and point:GetChildren()[1] or nil
     end
     if not point then return end
+    if (tick() - _0xa299._0xProgBuild.lastTreeRun) < _0xa299._0xProgTreeEvery then return end
+    _0xa299._0xProgBuild.lastTreeRun = tick()
 
     -- About to sit at a chakra point, so stop farming first.
     _0xa299._0xProgRyoStop()
@@ -28972,6 +29204,7 @@ function _0xa299._0xProgSkillTreePass()
                     -- Something arrived; try the tree again straight away
                     -- rather than idling another 30s.
                     _0xa299._0xProgBuild.lastTreeRun = 0
+                    _0xa299._0xProgTreeChecked = 0
                     return
                 end
             end
@@ -30311,6 +30544,7 @@ function _0xa299._0xStartAutoProg()
                 _0xa299._0xProgItemRetry = {}
                 _0xa299._0xProgWeaponAt = 0
                 _0xa299._0xProgBuild.lastTreeRun = 0
+                _0xa299._0xProgTreeChecked = 0
 
                 -- Re-arm the wipe. It latches permanently on a CONFIRMED wipe
                 -- so a successful one cannot re-fire, but the whole point is a
@@ -30693,7 +30927,12 @@ function _0xa299._0xStopAutoProg()
     end
     
     -- Any farm WE started goes with us; one the user turned on stays.
-    _0xa299._0xProgRyoStop()
+    --
+    -- Spawned, not awaited: _0xProgRyoStop blocks until the farm lets go of the
+    -- character, and this runs from the toggle callback where that would read as
+    -- the UI hanging. Nothing of ours is about to move the body on the way out,
+    -- so there is nothing to wait for.
+    task.spawn(_0xa299._0xProgRyoStop)
 
     _0xa299._0xAutoProg.isPanicking = false
     _0xa299._0xAutoProg.lastDebugState = ""
@@ -30718,6 +30957,7 @@ _0xa299._0xAutoProg.toggle = _0xa299._0xAPRG:AddToggle("Enable Auto Prog", false
         _0xa299._0xProgBuild.examTried = false
         _0xa299._0xProgItemRetry = {}
         _0xa299._0xProgBuild.lastTreeRun = 0
+        _0xa299._0xProgTreeChecked = 0
         _0xa299._0xProgBuild.wipeAt = 0
         _0xa299._0xProgWeaponAt = 0
         _0xa299._0xStartAutoProg()
@@ -30759,8 +30999,9 @@ do
     g:AddToggle("Farm Ryo While Waiting", false, function(Value)
         _0xa299._0xProgBuild.farmRyo = Value
         -- Turning it off should stop a farm we started straight away rather
-        -- than at the end of the age.
-        if not Value then _0xa299._0xProgRyoStop() end
+        -- than at the end of the age. Spawned so the toggle does not sit on
+        -- _0xProgRyoStop's release wait.
+        if not Value then task.spawn(_0xa299._0xProgRyoStop) end
     end, {Flag = "ProgFarmRyo", Type = "info", Text = "Farms Ryo in the dead time before each age up"})
 
     g:AddDivider()
