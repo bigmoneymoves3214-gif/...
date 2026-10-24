@@ -9641,13 +9641,85 @@ _0xa299._0x6da7 = {
 _0xa299._0x063d = OverlapParams.new()
 _0xa299._0x063d.FilterType = Enum.RaycastFilterType.Exclude
 
+---------------------------------------------------------------------
+-- WHAT AUTO PICKUP TOOK
+--
+-- The boss farm's loot webhook used to report only the drops the farm itself
+-- walked through its own pickup list. Auto Pickup runs on a separate
+-- Heartbeat and grabs anything in range, so with both on - the normal case
+-- while boss farming - everything it took was missing from the report.
+--
+-- Confirming a pickup is the whole difficulty. Auto Pickup fires `PickUp`
+-- optimistically EVERY frame at everything in range and never learns whether
+-- the server accepted it, so counting attempts would massively over-report.
+-- Instead, remember what we fired at and only count an item once it has
+-- actually left the workspace. An item still sitting there after
+-- _0xAutoPickGiveUp seconds means the server refused us, so it is dropped
+-- rather than counted.
+--
+-- Items the boss farm has claimed are deliberately NOT counted here. Auto
+-- Pickup is still allowed to grab them - that just loots faster - but the
+-- farm records anything that leaves the workspace whether or not it was the
+-- one that took it, so counting them in both places would double them.
+---------------------------------------------------------------------
+_0xa299._0xAutoPickLog = {}       -- item name -> quantity
+_0xa299._0xAutoPickPending = {}   -- instance -> { name, at }
+_0xa299._0xFarmClaimed = {}       -- instances the boss farm's loot pass owns
+_0xa299._0xAutoPickGiveUp = 4     -- seconds before a pickup counts as refused
+
+-- Note one attempt. Keeps the FIRST timestamp, so the give-up window is
+-- measured from when we started trying rather than being pushed back every
+-- frame we retry.
+function _0xa299._0xAutoPickTry(inst)
+    if not inst or _0xa299._0xFarmClaimed[inst] then return end
+    if _0xa299._0xAutoPickPending[inst] then return end
+    _0xa299._0xAutoPickPending[inst] = { name = inst.Name, at = tick() }
+end
+
+-- Settle outstanding attempts. Gone from the workspace = ours.
+function _0xa299._0xAutoPickResolve()
+    local now = tick()
+    for inst, info in pairs(_0xa299._0xAutoPickPending) do
+        local gone = true
+        pcall(function() gone = not inst:IsDescendantOf(workspace) end)
+        if gone then
+            -- Claimed between the attempt and now (the farm's drop listener
+            -- fires on ChildAdded, which can land after we have already
+            -- started firing at a reward). The farm will report it.
+            if not _0xa299._0xFarmClaimed[inst] and info.name and info.name ~= "" then
+                _0xa299._0xAutoPickLog[info.name] =
+                    (_0xa299._0xAutoPickLog[info.name] or 0) + 1
+            end
+            _0xa299._0xAutoPickPending[inst] = nil
+        elseif now - info.at > _0xa299._0xAutoPickGiveUp then
+            _0xa299._0xAutoPickPending[inst] = nil
+        end
+    end
+end
+
+-- Hand the tally over and reset, so each webhook reports only what was taken
+-- since the last one.
+function _0xa299._0xAutoPickDrain()
+    local out = {}
+    for name, qty in pairs(_0xa299._0xAutoPickLog) do
+        table.insert(out, { name = name, quantity = qty })
+    end
+    _0xa299._0xAutoPickLog = {}
+    return out
+end
+
 function _0xa299._0x5623()
     if _0xa299._0x6da7.connection then return end
     
     _0xa299._0x6da7.connection = _0xa299._0x64b8.Heartbeat:Connect(function()
+        -- Settle previous attempts first, and do it before the character
+        -- checks below: a pickup that completed as we died or respawned still
+        -- went into our inventory and should still be counted.
+        _0xa299._0xAutoPickResolve()
+
         local char = _0xa299._0x396d.Character
         if not char then return end
-        
+
         local hrp = char:FindFirstChild("HumanoidRootPart")
         if not hrp then return end
         
@@ -9666,11 +9738,13 @@ function _0xa299._0x5623()
             end
             
             if v:FindFirstChild("SpawnTime") and v:FindFirstChild("ItemDetector") then
+                _0xa299._0xAutoPickTry(v)
                 fireclickdetector(v.ItemDetector)
             elseif v:FindFirstChild("Pickupable") and v:FindFirstChild("ID", true) then
                 if not v:FindFirstChild("ItemDetector") and distance > 15 then
                     continue
                 end
+                _0xa299._0xAutoPickTry(v)
                 _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataEvent"):FireServer("PickUp", v:FindFirstChild("ID", true).Value, 2)
             end
         end
@@ -9682,6 +9756,12 @@ function _0xa299._0x2bc9()
         _0xa299._0x6da7.connection:Disconnect()
         _0xa299._0x6da7.connection = nil
     end
+    -- Resolve once more before letting go: an item taken in the last frame or
+    -- two should still make the tally. Then drop the rest, since nothing is
+    -- left running to settle them and they would sit here holding instance
+    -- references until the next enable.
+    pcall(_0xa299._0xAutoPickResolve)
+    _0xa299._0xAutoPickPending = {}
 end
 
 _0xa299._0x4b83:AddToggle("Auto Pickup Items", false, function(Value)
@@ -22180,6 +22260,7 @@ _0xa299._0xc2d2 = {
 }
 
 _0xa299._0x8643 = nil      -- PlayerAdded connection
+_0xa299._0xModLeave = nil  -- PlayerRemoving connection
 _0xa299._0xModScan = nil   -- periodic re-scan task
 _0xa299._0xModSeen = {}    -- userId -> true, so one mod is announced once
 _0xa299._0xModRankCache = {}
@@ -22592,10 +22673,15 @@ function _0xa299._0x22a2()
         end)
     end
 
-    _0xa299._0x71bb.PlayerRemoving:Connect(function(plr)
-        _0xa299._0xModRankCache[plr.UserId] = nil
-        _0xa299._0xModSeen[plr.UserId] = nil
-    end)
+    -- Guarded and stored like the PlayerAdded one above. This used to connect
+    -- unconditionally and was never disconnected, so every change of the
+    -- Moderator Action dropdown left another live copy behind.
+    if not _0xa299._0xModLeave then
+        _0xa299._0xModLeave = _0xa299._0x71bb.PlayerRemoving:Connect(function(plr)
+            _0xa299._0xModRankCache[plr.UserId] = nil
+            _0xa299._0xModSeen[plr.UserId] = nil
+        end)
+    end
 
     -- Periodic re-sweep. The one-shot scan plus PlayerAdded used to be the
     -- whole detector, so a group lookup that failed while a mod was joining
@@ -22620,6 +22706,10 @@ function _0xa299._0xc6be()
     if _0xa299._0x8643 then
         _0xa299._0x8643:Disconnect()
         _0xa299._0x8643 = nil
+    end
+    if _0xa299._0xModLeave then
+        _0xa299._0xModLeave:Disconnect()
+        _0xa299._0xModLeave = nil
     end
     if _0xa299._0xModScan then
         pcall(function() task.cancel(_0xa299._0xModScan) end)
@@ -22677,33 +22767,12 @@ _0xa299._0xb87d:AddInput("Watchlist", "name, 12345678, name2", function(Value)
         ("Watchlist: %d names, %d ids"):format(#names, #ids), 3, "shield")
 end)
 
-_0xa299._0xb87d:AddButton("Scan Server Now", function()
-    if _0xa299._0xc2d2.action == "none" then
-        _0xa299._0x8545:Notify("Security", "Pick a Moderator Action first", 3, "warning")
-        return
-    end
-    _0xa299._0xModRankCache = {}
-    _0xa299._0xModSeen = {}
-    task.spawn(function()
-        local n, hit = 0, nil
-        for _, plr in ipairs(_0xa299._0x71bb:GetPlayers()) do
-            if plr ~= _0xa299._0x396d then
-                n = n + 1
-                local ok, reason = pcall(function() return _0xa299._0xModReason(plr) end)
-                if ok and reason and not hit then
-                    hit = plr.Name .. " (" .. reason .. ")"
-                end
-            end
-        end
-        if hit then
-            _0xa299._0xModSeen = {}
-            _0xa299._0x89c4(hit)
-        else
-            _0xa299._0x8545:Notify("Security",
-                ("Checked %d players, no staff found"):format(n), 3, "check")
-        end
-    end)
-end)
+-- No "Scan Server Now" button. It was redundant: picking an action already
+-- sweeps everyone present, PlayerAdded checks each joiner twice, and the
+-- 20 s re-sweep covers the rest. Its only unique act was clearing
+-- _0xModRankCache, which is not needed either - a FAILED group lookup is
+-- never cached (see _0xModRank), so a transient web error is retried by the
+-- next sweep rather than marking someone clean forever.
 
 
 ---------------------------------------------------------------------
@@ -28000,10 +28069,52 @@ end
 -- map instead of restarting at the first one.
 _0xa299._0xOrangeTreeAt = 1
 
+---------------------------------------------------------------------
+-- AND IT LEARNS THE REST
+--
+-- The mapped list is NOT complete and was never going to be: it only has what
+-- streamed in while the map was being flown. Measured live afterwards, ten
+-- orange trees were replicated around one spot and only two of them were in
+-- the list - the other eight sat 139 to 459 studs from the nearest recorded
+-- position, so they are simply different trees.
+--
+-- So every tree the farm sees gets remembered, and the tour walks the mapped
+-- list plus everything learned since. The map is a head start, not a
+-- dependency: each lap picks up whatever was streamed in beside the trees it
+-- already knew, and the route grows on its own.
+--
+-- 60 studs of slack, because a tree recorded by its pivot and the same tree
+-- recorded by its MainBranch land 30-40 studs apart.
+---------------------------------------------------------------------
+_0xa299._0xOrangeLearned = {}
+_0xa299._0xOrangeSameTree = 60
+
+function _0xa299._0xRyoLearnTree(pos)
+    if typeof(pos) ~= "Vector3" then return false end
+    for _, known in ipairs(_0xa299._0xOrangeTrees) do
+        if (known - pos).Magnitude < _0xa299._0xOrangeSameTree then return false end
+    end
+    for _, known in ipairs(_0xa299._0xOrangeLearned) do
+        if (known - pos).Magnitude < _0xa299._0xOrangeSameTree then return false end
+    end
+    table.insert(_0xa299._0xOrangeLearned, pos)
+    return true
+end
+
+-- Mapped first, then learned. The tour index runs over the combined length, so
+-- the route simply gets longer as more turn up.
+function _0xa299._0xRyoTreeList()
+    if #_0xa299._0xOrangeLearned == 0 then return _0xa299._0xOrangeTrees end
+    local all = {}
+    for _, p in ipairs(_0xa299._0xOrangeTrees) do all[#all + 1] = p end
+    for _, p in ipairs(_0xa299._0xOrangeLearned) do all[#all + 1] = p end
+    return all
+end
+
 -- Stream in the next known tree we have not harvested this cycle, so the
 -- discovery scan has something to find. Returns true if it travelled.
 function _0xa299._0xRyoNextKnownTree(runId)
-    local known = _0xa299._0xOrangeTrees
+    local known = _0xa299._0xRyoTreeList()
     if #known == 0 then return false end
 
     for _ = 1, #known do
@@ -28354,6 +28465,23 @@ function _0xa299._0xb795()
 
             if not _0xa299._0xRyoAlive(myRun) then break end
 
+            -- TOUR the known positions, rather than only falling back to them.
+            --
+            -- The fallback never fired. The attribute reset at the bottom of
+            -- this body clears every streamed tree's mark, so the next cycle
+            -- found them all "unharvested" again, decided there was local work
+            -- to do and never travelled - working the same few trees by the
+            -- safespot forever. Which is also the least rewarding thing it
+            -- could do, because their fruit was taken seconds earlier and has
+            -- not regrown.
+            --
+            -- Advancing one position per cycle tours all of them instead, and
+            -- each arrival streams fresh trees in for the scan below.
+            if #_0xa299._0xRyoTreeList() > 0 then
+                _0xa299._0xRyoNextKnownTree(myRun)
+                if not _0xa299._0xRyoAlive(myRun) then break end
+            end
+
             -- Build orange tree cache once per cycle instead of scanning every frame
             local orangeTrees = {}
             for _, v in pairs(workspace:GetDescendants()) do
@@ -28362,21 +28490,23 @@ function _0xa299._0xb795()
                 end
             end
 
-            -- Everything in range already picked, or nothing in range at all?
-            -- Then move on to the next tree we know the position of and let the
-            -- next cycle's scan find it. Without this the farm only ever worked
-            -- the trees that happened to be streamed in where it was standing.
-            local anyLeft = false
+            -- Remember where they are while we are here. The scan has the
+            -- instances in hand, so this costs one position read apiece, and it
+            -- is what turns the mapped list into a route that keeps growing.
+            local learned = 0
             for _, v in ipairs(orangeTrees) do
-                if not v:GetAttribute("orange") then anyLeft = true; break end
+                local model = v.Parent
+                local mb = model and model:FindFirstChild("MainBranch")
+                local pos = mb and mb.Position or nil
+                if not pos and model then
+                    local ok, pivot = pcall(function() return model:GetPivot().Position end)
+                    if ok and pivot and pivot.Magnitude > 1 then pos = pivot end
+                end
+                if pos and _0xa299._0xRyoLearnTree(pos) then learned = learned + 1 end
             end
-            if not anyLeft and #_0xa299._0xOrangeTrees > 0 then
-                -- Deliberately NOT a continue. Falling through costs one cheap
-                -- pass over an already-marked list and then runs the attribute
-                -- reset at the bottom of the body, which is what lets a tree be
-                -- harvested again after it regrows. Skipping that would leave
-                -- every tree marked forever.
-                _0xa299._0xRyoNextKnownTree(myRun)
+            if learned > 0 then
+                _0xa299._0xAutoProgDebug("RYO_TREES",
+                    ("+%d new, %d on the route"):format(learned, #_0xa299._0xRyoTreeList()))
             end
 
             for _, v in ipairs(orangeTrees) do
@@ -28395,21 +28525,44 @@ function _0xa299._0xb795()
                     -- did nothing - which is why the farm looked dead.
                     -- _0xTreeMainBranch streams the tree in off its GetPivot()
                     -- (which works on shells) before giving up.
+                    --
+                    -- THE WHOLE LOOKUP AND TRAVEL IS BRACKETED, and the live
+                    -- check is repeated immediately before the teleport.
+                    --
+                    -- This was the race. _0xTreeMainBranch blocks for up to
+                    -- 1.5 s waiting for a shell to stream in, and nothing
+                    -- between that and _0xSTP looked at whether the farm had
+                    -- been stopped - nor was any of it inside the busy
+                    -- brackets, so _0xProgRyoStop saw a counter of zero and
+                    -- returned straight away. Auto Prog then sat down at a
+                    -- chakra point and a moment later this line teleported us
+                    -- to a tree, mid-sit.
+                    _0xa299._0xRyoBusy(1)
                     local mainBranch = _0xa299._0xTreeMainBranch(v.Parent)
                     if not mainBranch then
                         -- Genuinely unreachable: mark it so we move on instead
                         -- of retrying the same dead tree every cycle.
                         v:SetAttribute("orange", true)
+                        _0xa299._0xRyoBusy(-1)
                         continue
                     end
+                    if not _0xa299._0xRyoAlive(myRun) then
+                        _0xa299._0xRyoBusy(-1)
+                        break
+                    end
                     _0xa299._0xSTP(mainBranch.CFrame)
+                    _0xa299._0xRyoBusy(-1)
 
                     local timeout = os.clock() + 12
                     while os.clock() < timeout and not spawned do
                         if not _0xa299._0xRyoAlive(myRun) then break end
                         
                         if _0xa299._0x6378 then
-                            if char and char:FindFirstChild("HumanoidRootPart") then
+                            -- Only move ourselves if the farm is still ours to
+                            -- drive; Auto Prog has its own idea of where to
+                            -- hide and does not need help.
+                            if _0xa299._0xRyoAlive(myRun) and char
+                               and char:FindFirstChild("HumanoidRootPart") then
                                 char.HumanoidRootPart.CFrame = _0xa299._0xdde4()
                             end
                             break
@@ -28662,6 +28815,16 @@ end
 -- be out of the way.
 _0xa299._0xProgRyoReleaseWait = 2.5
 
+-- A deliberate beat AFTER the farm has let go, before Auto Prog moves us.
+--
+-- The busy brackets guarantee no farm thread is inside a positional section,
+-- but "not inside one" is not the same as "the engine has caught up": a CFrame
+-- written on the previous frame, a BodyVelocity just destroyed, a PlatformStand
+-- just cleared all take a moment to settle, and teleporting into that produced
+-- the stutter where the character appeared to get pulled back. One second is
+-- plenty and this window is dead time anyway.
+_0xa299._0xProgSettle = 1
+
 function _0xa299._0xProgRyoStop()
     if not _0xa299._0xProgRyoOwned then return end
     _0xa299._0xProgRyoOwned = false
@@ -28679,8 +28842,8 @@ function _0xa299._0xProgRyoStop()
         _0xa299._0x5d7f.busy = 0
     end
 
-    -- One frame for the last CFrame write to settle before the caller moves us.
-    task.wait()
+    -- Then let things actually settle before the caller teleports us.
+    task.wait(_0xa299._0xProgSettle)
     _0xa299._0xAutoProgDebug("RYO_FARM", "stopped")
 end
 
@@ -28732,15 +28895,24 @@ end
 -- and Improved Whirlwind (both need Taijutsu Combat). Those depend on skills
 -- outside their own path, so walking the path can never satisfy them.
 _0xa299._0xSkillPaths = {
+    -- Ends at Sealing Barrier Rod. Past that the chain is bloodline-gated and
+    -- a normal run can never finish it, so leaving those two in meant the path
+    -- never completed and the tree pass kept sitting down for a lead skill that
+    -- would be refused every time:
+    --   Extraction Seal           250 Ryo, 3 Fragments, Uzumaki Affinity
+    --   Adamantine Sealing Chains Uzumaki Affinity, Reanimated Soul, Acumen 150
     Sealing = {
         "Substitution", "Chakra Feet", "Chakra Charge",
         "Sealing Floor", "Binding Seal", "Sealing Banners",
-        "Sealing Barrier Rod", "Extraction Seal", "Adamantine Sealing Chains",
+        "Sealing Barrier Rod",
     },
+    -- Ends at Genjutsu Release for the same reason. Izanagi's requirements are
+    -- literally { Genjutsu Release, Unknown = true } - a hidden gate nothing we
+    -- can read satisfies.
     Genjutsu = {
         "Substitution", "Chakra Tree Jump",
         "Feather Genjutsu", "Fog Illusion", "Scrambled Mind",
-        "Crow Illusion", "Genjutsu Release", "Izanagi",
+        "Crow Illusion", "Genjutsu Release",
     },
     Stamina = {
         "Substitution",
@@ -28806,6 +28978,82 @@ function _0xa299._0xNextSkillOnPath(data, pathName)
         end
     end
     return nil
+end
+
+---------------------------------------------------------------------
+-- WEBHOOK, WITH THE PROGRESS BLOCK
+--
+-- Three things report: an age up, a wipe and a finished quest. They all carry
+-- the same footer - Ryo, Embers, Age, and how far each selected path has got.
+--
+-- Field names were read off live data rather than guessed: Ryo, Embers and Age
+-- are all plain top-level numbers on the data table. Age being there directly
+-- is worth knowing - the rest of the script scrapes the HUD label through
+-- _0xGetPlayerAge, which stays as the fallback here, but the field is cheaper
+-- and does not depend on the GUI existing.
+---------------------------------------------------------------------
+_0xa299._0xProgHookThumb = "https://cdn.discordapp.com/attachments/1433265555187433573/1458950997354217593/ChatGPT_Image_Jan_6_2026_05_12_21_PM-removebg-preview.png?ex=6976997f&is=697547ff&hm=d11ac9261f8682d5a417e1d5017f9b99c0ef18f93abe1fc0a9739d07f9f51954&"
+
+-- owned/total for each SELECTED path. Counted off UnlockedSkills, so it is the
+-- real state rather than a tally this script kept - which means it is still
+-- right after a reload part-way through a life.
+function _0xa299._0xProgPathProgress(data)
+    local parts = {}
+    for _, pathName in ipairs(_0xa299._0xSkillPathOrder) do
+        if _0xa299._0xProgBuild.paths and _0xa299._0xProgBuild.paths[pathName] then
+            local chain = _0xa299._0xSkillPaths[pathName] or {}
+            local owned = 0
+            for _, skillName in ipairs(chain) do
+                if _0xa299._0xHasSkill(data, skillName) then owned = owned + 1 end
+            end
+            parts[#parts + 1] = ("%s %d/%d"):format(pathName, owned, #chain)
+        end
+    end
+    return parts
+end
+
+function _0xa299._0xProgHook(title, extra)
+    if not (_0xa299._0x07dd.enabled and _0xa299._0x07dd.url ~= "") then return end
+
+    pcall(function()
+        local data = _0xa299._0xLocalData and _0xa299._0xLocalData() or nil
+
+        local function field(name, fallback)
+            local v = (type(data) == "table") and data[name] or nil
+            return tostring(tonumber(v) or fallback or 0)
+        end
+
+        local body = {}
+        for _, line in ipairs(extra or {}) do body[#body + 1] = line end
+
+        body[#body + 1] = "**Ryo:**\n```" .. field("Ryo") .. "```"
+        body[#body + 1] = "**Embers:**\n```" .. field("Embers") .. "```"
+        body[#body + 1] = "**Age:**\n```" .. field("Age", _0xa299._0xGetPlayerAge()) .. "```"
+
+        -- Only when the skill tree is actually being progressed, as asked.
+        if _0xa299._0xProgBuild.skillTree then
+            local parts = _0xa299._0xProgPathProgress(data)
+            body[#body + 1] = "**Moves Unlocked:**\n```"
+                .. (#parts > 0 and table.concat(parts, "\n") or "no paths selected") .. "```"
+        end
+
+        body[#body + 1] = "**Account Name:**\n```" .. _0xa299._0x396d.Name .. "```"
+        body[#body + 1] = "\n**Time:** " .. os.date("%H:%M:%S")
+
+        _0xa299._0x0a65({
+            Url = _0xa299._0x07dd.url,
+            Method = "POST",
+            Headers = {["Content-Type"] = "application/json"},
+            Body = _0xa299._0x5f86:JSONEncode({
+                ["embeds"] = {{
+                    ["title"] = title,
+                    ["description"] = table.concat(body, "\n"),
+                    ["color"] = 10181046,
+                    ["thumbnail"] = { ["url"] = _0xa299._0xProgHookThumb },
+                }}
+            })
+        })
+    end)
 end
 
 ---------------------------------------------------------------------
@@ -29018,15 +29266,53 @@ function _0xa299._0xProgSealingBells()
 
     plr.Character.HumanoidRootPart.CFrame = bellCF
 
+    -- SUCCESS IS THE ITEM BEING IN THE INVENTORY, not the click having been
+    -- fired. That was the bug behind "it picked them up and kept going back":
+    --
+    --  * "took" used to be set the instant fireclickdetector ran. If the click
+    --    did not land, this returned true, _0xProgAcquireFor cleared the retry
+    --    and reset the tree cooldown, and the pass came straight back and made
+    --    the same trip again - a loop with no backoff at all.
+    --  * And if the bells arrived as a streamed shell with the ItemDetector not
+    --    yet replicated, "detector" was nil, this returned FALSE even though
+    --    the next attempt would have worked, and the item sat under a pointless
+    --    two minute backoff.
+    --
+    -- Both go away by waiting for the detector and then watching the count.
+    local before = _0xa299._0xCountItem(_0xa299._0xLocalData(), "Sealing Bells")
     local took = false
+
     if holdAtBell(0.5) then
+        -- Give the detector a moment to replicate rather than giving up on the
+        -- first frame; we are already standing on the bell.
         local detector = bells:FindFirstChild("ItemDetector")
             or bells:FindFirstChild("ClickDetector")
+        if not detector then
+            local deadline = tick() + 1.5
+            repeat
+                task.wait(0.1)
+                if not (plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")) then break end
+                plr.Character.HumanoidRootPart.CFrame = bellCF
+                detector = bells:FindFirstChild("ItemDetector")
+                    or bells:FindFirstChild("ClickDetector")
+            until detector or tick() > deadline
+        end
+
         if detector then
             pcall(function() fireclickdetector(detector) end)
-            took = true
+
+            -- Hold position while we wait for it: the click does not register
+            -- unless we are still on the bell when the server processes it.
+            local deadline = tick() + 2
+            repeat
+                task.wait(0.1)
+                local hrp = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
+                if hrp then hrp.CFrame = bellCF end
+                if _0xa299._0xCountItem(_0xa299._0xLocalData(), "Sealing Bells") > before then
+                    took = true
+                end
+            until took or tick() > deadline
         end
-        holdAtBell(0.8)
     end
 
     if plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then
@@ -29340,7 +29626,7 @@ function _0xa299._0xProgSkillTreePass()
     _0xa299._0x8545:Notify("Auto Prog", "Progressing skill trees", 2, "info")
 
     local unlocked, refused = 0, 0
-    _0xa299._0xProgSeated(point, function()
+    local seatedOk, seatedWhy = _0xa299._0xProgSeated(point, function()
         for _, entry in ipairs(wanted) do
             if not _0xa299._0xProgBuild.skillTree then break end
             local pathName, skillName = entry[1], entry[2]
@@ -29368,6 +29654,18 @@ function _0xa299._0xProgSkillTreePass()
             end
         end
     end)
+
+    -- Seating can be refused - a player within 150 studs of the point, or Rest
+    -- never coming up - and then the body above never ran at all. Say which,
+    -- rather than looking like a pass that found nothing to do.
+    if not seatedOk then
+        _0xa299._0xAutoProgDebug("TREE_NO_SEAT", tostring(seatedWhy))
+    end
+
+    -- Off the point, and a beat before anything else claims the body. The farm
+    -- restarts at the end of this pass of the wait loop, and starting it while
+    -- we are still standing up interrupted the stand-up.
+    task.wait(_0xa299._0xProgSettle)
 
     if unlocked > 0 then
         _0xa299._0x8545:Notify("Auto Prog",
@@ -29861,6 +30159,12 @@ function _0xa299._0xProgWipe()
     task.wait(3)
     local ageAfter = _0xa299._0xGetPlayerAge()
     if ageAfter and ageBefore and ageAfter < ageBefore then
+        -- Reported here rather than where the remotes are fired, because only a
+        -- confirmed drop in age means the reincarnation actually happened.
+        _0xa299._0xProgHook("Wiped", {
+            "**Wiped at age:**\n```" .. tostring(ageBefore) .. "```",
+            "**Ironline:**\n```" .. (_0xa299._0xProgBuild.useIronline and "yes" or "no") .. "```",
+        })
         _0xa299._0xProgBuild.wiped = true
 
         -- Tell the loop to start over. Without this it carries on inside the
@@ -29895,6 +30199,7 @@ _0xa299._0xAutoProg = {
     restartCycle = false,   -- set by _0xProgWipe; makes the loop rejoin and start over
     runId = 0,              -- generation, so a dead run cannot come back to life
     dying = nil,            -- the previous run thread while it unwinds
+    questThread = nil,      -- the in-flight quest, which has its own thread now
     -- Quests whose mission the board was not offering. Boards re-roll (one
     -- with no Cratos tile had three a minute later, observed), so these are
     -- retried instead of written off. Cleared at the start of each age cycle.
@@ -30204,6 +30509,10 @@ function _0xa299._0xAutoProgFireEndBlock()
     end)
 end
 
+-- Longest a single quest may run before Auto Prog writes it off. Boss missions
+-- with travel are the slow ones, so this is deliberately loose.
+_0xa299._0xAutoProgQuestCap = 300
+
 function _0xa299._0xAutoProgExecuteQuest(questName)
     if not _0xa299._0xAutoProg.enabled then return false end
     
@@ -30217,9 +30526,62 @@ function _0xa299._0xAutoProgExecuteQuest(questName)
     _0xa299._0xAutoProgUpdateGUI("autoprog_quest", questName, "Completing...")
     _0xa299._0x8545:Notify("Auto Prog", "Starting quest: " .. questName, 2, "info")
     
-    local success, err = pcall(function()
-        _0xa299._0x9b94()
+    -- WATCHDOG. _0x9b94 is a few thousand lines of quest logic with plenty of
+    -- loops in it, and one that never exits used to take the entire run with it:
+    -- this call blocked, so the quest loop, the age wait, the tree pass and the
+    -- Ryo farm restart all stopped with it and the only sign was the HUD stuck
+    -- on "Completing...". Capping it per quest means the worst case is losing
+    -- one quest.
+    --
+    -- _0x62f5 is raised first and given a grace period, because that is the flag
+    -- the quests themselves test - letting one unwind runs its own cleanup
+    -- (animations, noclip, position) which cancelling it outright would skip.
+    local success, err = false, nil
+    local finished = false
+
+    local questThread = task.spawn(function()
+        success, err = pcall(function()
+            _0xa299._0x9b94()
+        end)
+        finished = true
     end)
+
+    -- Published so _0xStopAutoProg can reach it. The quest runs on its OWN
+    -- thread now rather than on the loop thread, so the delayed cancel in there
+    -- no longer covers it and a stop could otherwise leave a quest running
+    -- against a run that is already gone.
+    _0xa299._0xAutoProg.questThread = questThread
+
+    local deadline = tick() + _0xa299._0xAutoProgQuestCap
+    while not finished and tick() < deadline do
+        task.wait(0.25)
+    end
+
+    if not finished then
+        _0xa299._0xAutoProgDebug("QUEST_TIMEOUT", questName)
+        _0xa299._0x8545:Notify("Auto Prog",
+            questName .. " stalled past " .. _0xa299._0xAutoProgQuestCap
+            .. "s - moving on", 4, "warning")
+
+        _0xa299._0x62f5 = true
+        local grace = tick() + 8
+        while not finished and tick() < grace do
+            task.wait(0.25)
+        end
+
+        if not finished then
+            -- Would not unwind, so take it down; better one leaked quest than a
+            -- dead run.
+            _0xa299._0xAutoProgDebug("QUEST_KILLED", questName)
+            pcall(function() task.cancel(questThread) end)
+        end
+
+        success, err = false, "timed out"
+    end
+
+    if _0xa299._0xAutoProg.questThread == questThread then
+        _0xa299._0xAutoProg.questThread = nil
+    end
     
     _0xa299._0xAutoProgFireEndBlock()
     
@@ -30228,29 +30590,11 @@ function _0xa299._0xAutoProgExecuteQuest(questName)
     if success then
         _0xa299._0xAutoProgDebug("QUEST_DONE", questName)
         
-        -- Send webhook notification for quest completion
-        if _0xa299._0x07dd.enabled and _0xa299._0x07dd.url ~= "" then
-            pcall(function()
-                local currentTime = os.date("%H:%M:%S")
-                local embedData = {
-                    ["embeds"] = {{
-                        ["title"] = "Quest Completed",
-                        ["description"] = "**Quest:**\n```" .. questName .. "```\n**Account Name:**\n```" .. _0xa299._0x396d.Name .. "```\n\n**Time:** " .. currentTime,
-                        ["color"] = 10181046,
-                        ["thumbnail"] = {
-                            ["url"] = "https://cdn.discordapp.com/attachments/1433265555187433573/1458950997354217593/ChatGPT_Image_Jan_6_2026_05_12_21_PM-removebg-preview.png?ex=6976997f&is=697547ff&hm=d11ac9261f8682d5a417e1d5017f9b99c0ef18f93abe1fc0a9739d07f9f51954&"
-                        }
-                    }}
-                }
-                
-                _0xa299._0x0a65({
-                    Url = _0xa299._0x07dd.url,
-                    Method = "POST",
-                    Headers = {["Content-Type"] = "application/json"},
-                    Body = _0xa299._0x5f86:JSONEncode(embedData)
-                })
-            end)
-        end
+        -- Through the shared builder, so this carries the same Ryo / Embers /
+        -- Age / path progress block as the age up and the wipe.
+        _0xa299._0xProgHook("Quest Completed", {
+            "**Quest:**\n```" .. questName .. "```",
+        })
     else
         _0xa299._0xAutoProgDebug("QUEST_ERROR", questName .. " | " .. tostring(err))
     end
@@ -31029,29 +31373,10 @@ function _0xa299._0xStartAutoProg()
                     _0xa299._0xAutoProgUpdateGUI("autoprog_age_up", tostring(_0xa299._0xAutoProg.currentAge), tostring(newAge))
                     _0xa299._0x8545:Notify("Auto Prog", "Aged up " .. _0xa299._0xAutoProg.currentAge .. " -> " .. newAge, 3, "check")
                     
-                    -- Send webhook notification for age up
-                    if _0xa299._0x07dd.enabled and _0xa299._0x07dd.url ~= "" then
-                        pcall(function()
-                            local currentTime = os.date("%H:%M:%S")
-                            local embedData = {
-                                ["embeds"] = {{
-                                    ["title"] = "Age Up",
-                                    ["description"] = "**Age:**\n```" .. _0xa299._0xAutoProg.currentAge .. " -> " .. newAge .. "```\n**Account Name:**\n```" .. _0xa299._0x396d.Name .. "```\n\n**Time:** " .. currentTime,
-                                    ["color"] = 10181046,
-                                    ["thumbnail"] = {
-                                        ["url"] = "https://cdn.discordapp.com/attachments/1433265555187433573/1458950997354217593/ChatGPT_Image_Jan_6_2026_05_12_21_PM-removebg-preview.png?ex=6976997f&is=697547ff&hm=d11ac9261f8682d5a417e1d5017f9b99c0ef18f93abe1fc0a9739d07f9f51954&"
-                                    }
-                                }}
-                            }
-                            
-                            _0xa299._0x0a65({
-                                Url = _0xa299._0x07dd.url,
-                                Method = "POST",
-                                Headers = {["Content-Type"] = "application/json"},
-                                Body = _0xa299._0x5f86:JSONEncode(embedData)
-                            })
-                        end)
-                    end
+                    _0xa299._0xProgHook("Age Up", {
+                        "**Aged:**\n```" .. _0xa299._0xAutoProg.currentAge
+                            .. " -> " .. newAge .. "```",
+                    })
                     
                     _0xa299._0xAutoProg.currentAge = newAge
                     task.wait(2)
@@ -31101,6 +31426,19 @@ function _0xa299._0xStopAutoProg()
     -- typically). And re-reading the field five seconds later meant that if a
     -- restart HAD got through, the stale timer would cancel the new thread
     -- instead of the old one.
+    -- The in-flight quest, if any. _0x62f5 above already told it to unwind; this
+    -- is the backstop for one that will not, and it has to be explicit because
+    -- the quest no longer shares the loop thread.
+    local quest = _0xa299._0xAutoProg.questThread
+    _0xa299._0xAutoProg.questThread = nil
+    if quest then
+        task.delay(8, function()
+            if coroutine.status(quest) ~= "dead" then
+                pcall(function() task.cancel(quest) end)
+            end
+        end)
+    end
+
     local stopping = _0xa299._0xAutoProg.connection
     _0xa299._0xAutoProg.connection = nil
     -- Kept where a restart can see it, so _0xStartAutoProg waits this thread
@@ -36382,6 +36720,10 @@ function _0xa299._0xa94c()
                 
                 -- Track items collected during pickup
                 local collectedItems = {}
+                -- Fresh claim set per boss. Entries from the previous one point
+                -- at destroyed instances, and keeping them would grow the table
+                -- for the whole session.
+                _0xa299._0xFarmClaimed = {}
                 
                 if lootConfig then
                     -- Check if loot has spawned - wait up to 3 seconds for loot to spawn
@@ -36467,6 +36809,12 @@ function _0xa299._0xa94c()
                         end
 
                         table.insert(bosspickuptable, {object = newthing, id = idObject})
+                        -- Claim it, so Auto Pickup does not also count it. It
+                        -- may still grab it - that only loots faster - but the
+                        -- record below fires whenever the drop leaves the
+                        -- workspace regardless of who took it, so counting it
+                        -- in both places would double it.
+                        _0xa299._0xFarmClaimed[newthing] = true
                         dropsthere = true
                     end)
                     
@@ -36742,6 +37090,30 @@ function _0xa299._0xa94c()
                         task.wait(0.2)
                     end
                     
+                    -- Fold in whatever Auto Pickup took. It runs on its own
+                    -- Heartbeat and tallies separately, so without this the
+                    -- report only ever covered the drops this loop walked
+                    -- itself - everything Auto Pickup beat it to, and every
+                    -- non-reward item lying around the arena, went unreported.
+                    --
+                    -- Merged BEFORE the emptiness check below, so a run where
+                    -- Auto Pickup got everything still sends a webhook instead
+                    -- of silently reporting nothing.
+                    for _, extra in ipairs(_0xa299._0xAutoPickDrain()) do
+                        local found = false
+                        for _, ci in ipairs(collectedItems) do
+                            if ci.name == extra.name then
+                                ci.quantity = ci.quantity + extra.quantity
+                                found = true
+                                break
+                            end
+                        end
+                        if not found then
+                            table.insert(collectedItems,
+                                {name = extra.name, quantity = extra.quantity})
+                        end
+                    end
+
                     -- Send webhook notification with collected items (directly tracked during pickup)
                     if #collectedItems > 0 and _0xa299._0x07dd.enabled and _0xa299._0x07dd.url ~= "" then
                         task.spawn(function()
@@ -41551,6 +41923,11 @@ _0xa299._0x62f5 = false
 _0xa299._0x8434_cooldown = 0
 questStartPosition = nil
 
+-- How long a quest will sit still while being watched before giving up on
+-- itself. Generous, because an observation usually passes in seconds; the point
+-- is only that it cannot be forever.
+_0xa299._0xQuestObservedCap = 90
+
 function _0xa299._0x0514()
     -- While actively observed by chakra sense, park at the quest start position
     -- and hold there until the observation clears (or the quest is cancelled).
@@ -41559,7 +41936,30 @@ function _0xa299._0x0514()
     -- existing "if _0x0514() then return end" / "until _0x0514() or ..." logic is unchanged.
     if _0xa299._0x6378 and not _0xa299._0x62f5 and questStartPosition then
         local notified = false
+
+        -- BOUNDED. This wait used to have no upper limit, and that is how a run
+        -- hangs: a quest calls this before it does anything, so if Chakra Sense
+        -- stays on you the quest sits here forever with the HUD frozen on
+        -- "Completing...". Auto Prog cannot notice either - its age-wait loop is
+        -- not running while a quest is in flight, so there is nothing left
+        -- checking anything.
+        --
+        -- Past the cap, give up on THIS quest rather than the whole run: raising
+        -- the stop flag makes every "if _0x0514() then return end" in the quest
+        -- unwind on its own, and the quest loop parks it in deferredQuests to be
+        -- retried next cycle.
+        local holdUntil = tick() + _0xa299._0xQuestObservedCap
+
         while _0xa299._0x6378 and not _0xa299._0x62f5 do
+            if tick() > holdUntil then
+                _0xa299._0x62f5 = true
+                pcall(function()
+                    _0xa299._0x8545:Notify("Quest",
+                        "Still observed after " .. _0xa299._0xQuestObservedCap
+                        .. "s - dropping this quest", 4, "warning")
+                end)
+                break
+            end
             if not notified then
                 notified = true
                 pcall(function()
@@ -42869,7 +43269,7 @@ function _0xa299._0x9b94Run()
                     -- Wait until players leave or timeout
                     local waitStart = tick()
                     local maxWait = 30
-                    while #nearbyPlayers > 0 and (tick() - waitStart) < maxWait and _0xa299._0x8434_enabled do
+                    while #nearbyPlayers > 0 and (tick() - waitStart) < maxWait and not _0xa299._0x62f5 do
                         task.wait(1)
                         nearbyPlayers = _0xa299._0xa382(boardPos, _0xa299._0x220a.detectionRange)
                     end
@@ -43220,7 +43620,7 @@ function _0xa299._0x9b94Run()
                     -- Wait until players leave or timeout
                     local waitStart = tick()
                     local maxWait = 30
-                    while #nearbyPlayers > 0 and (tick() - waitStart) < maxWait and _0xa299._0x8434_enabled do
+                    while #nearbyPlayers > 0 and (tick() - waitStart) < maxWait and not _0xa299._0x62f5 do
                         task.wait(1)
                         nearbyPlayers = _0xa299._0xa382(boardPos, _0xa299._0x220a.detectionRange)
                     end
@@ -43596,7 +43996,7 @@ function _0xa299._0x9b94Run()
                     -- Wait until players leave or timeout
                     local waitStart = tick()
                     local maxWait = 30
-                    while #nearbyPlayers > 0 and (tick() - waitStart) < maxWait and _0xa299._0x8434_enabled do
+                    while #nearbyPlayers > 0 and (tick() - waitStart) < maxWait and not _0xa299._0x62f5 do
                         task.wait(1)
                         nearbyPlayers = _0xa299._0xa382(boardPos, _0xa299._0x220a.detectionRange)
                     end
@@ -44063,7 +44463,7 @@ function _0xa299._0x9b94Run()
                     -- Wait until players leave or timeout
                     local waitStart = tick()
                     local maxWait = 30
-                    while #nearbyPlayers > 0 and (tick() - waitStart) < maxWait and _0xa299._0x8434_enabled do
+                    while #nearbyPlayers > 0 and (tick() - waitStart) < maxWait and not _0xa299._0x62f5 do
                         task.wait(1)
                         nearbyPlayers = _0xa299._0xa382(boardPos, _0xa299._0x220a.detectionRange)
                     end
@@ -44470,7 +44870,7 @@ function _0xa299._0x9b94Run()
                     -- Wait until players leave or timeout
                     local waitStart = tick()
                     local maxWait = 30
-                    while #nearbyPlayers > 0 and (tick() - waitStart) < maxWait and _0xa299._0x8434_enabled do
+                    while #nearbyPlayers > 0 and (tick() - waitStart) < maxWait and not _0xa299._0x62f5 do
                         task.wait(1)
                         nearbyPlayers = _0xa299._0xa382(boardPos, _0xa299._0x220a.detectionRange)
                     end
@@ -46213,47 +46613,89 @@ end)
 _0xa299._0x2f5c:AddLabel("Press keybind to toggle menu")
 
 _0xa299._0x5a0f:AddButton("Unload Script", function()
-    -- Cleanup
-    _0xa299._0xfe42()
-    _0xa299._0x63e6()
-    _0xa299._0x2bc9()
-    _0xa299._0xfccf()
-    _0xa299._0x2f8f(false)
-    if _0xa299._0x26cc.connection then
-        _0xa299._0x26cc.connection:Disconnect()
+    local lib = _0xa299._0x8545
+
+    -- Quiet the notification storm from every toggle we are about to flip.
+    -- Same flag config-loading already uses for exactly this.
+    local wasLoading = lib and lib._isLoadingConfig
+    if lib then lib._isLoadingConfig = true end
+
+    -- Turn every ENABLED toggle off through its own Set, so each feature
+    -- runs the precise teardown its callback already performs - metamethod
+    -- hooks put back, loops cancelled, Lighting restored - instead of this
+    -- button trying to reproduce all of it and drifting out of date.
+    -- ToggleObj.Set calls the callback (library Update ends in
+    -- `pcall(Callback, State)`), which is what makes this work.
+    --
+    -- Driven off Library.Options so a feature added later is cleaned up
+    -- without anyone remembering to edit this list. Booleans only: Options
+    -- also holds sliders, dropdowns, inputs, keybinds and colour pickers,
+    -- every one of which also has a Set.
+    if lib and lib.Options then
+        for _, obj in pairs(lib.Options) do
+            if type(obj) == "table" and type(obj.Value) == "boolean"
+               and obj.Value == true and type(obj.Set) == "function" then
+                pcall(function() obj:Set(false) end)
+            end
+        end
     end
-    if _0xa299._0xbc30 then
-        _0xa299._0xbc30:Disconnect()
+
+    -- Explicit teardowns, each pcall'd SEPARATELY.
+    --
+    -- This is the bug that made the button look dead: they used to be
+    -- called bare, so the first one to error aborted every line after it -
+    -- including the Library:Unload() at the very end. Features stopped but
+    -- the menu stayed on screen.
+    --
+    -- Looked up BY NAME rather than collected into a table of functions,
+    -- because a nil in an array terminates ipairs early and would silently
+    -- skip the rest.
+    for _, name in ipairs({
+        "_0x6ce0",             -- boss farm; was not torn down at all
+        "_0xRestoreLighting",  -- was missing, and No Visual Effects edits Lighting
+        "_0xfe42", "_0x63e6", "_0x2bc9", "_0xfccf",
+        "_0x071f", "_0x6e0c", "_0xa330", "_0xc6be",
+        "_0x02fc", "_0x0fec", "_0xefc6",
+    }) do
+        local fn = _0xa299[name]
+        if type(fn) == "function" then pcall(fn) end
     end
-    if _0xa299._0xf947.connection then
-        _0xa299._0xf947.connection:Disconnect()
+    pcall(function() _0xa299._0x2f8f(false) end)
+
+    -- select("#") rather than ipairs: a nil anywhere in an array literal ends
+    -- ipairs early, which would silently skip everything after the first
+    -- feature that happened to be unused this session.
+    local function dropAll(method, ...)
+        for i = 1, select("#", ...) do
+            local v = select(i, ...)
+            if v then pcall(function() v[method](v) end) end
+        end
     end
-    _0xa299._0x071f()
-    _0xa299._0x6e0c()
-    _0xa299._0xa330()
-    _0xa299._0xc6be()
-    _0xa299._0x02fc()
-    _0xa299._0x0fec()
-    _0xa299._0xefc6()
-    if _0xa299._0x761f then
-        _0xa299._0x761f:Destroy()
+
+    dropAll("Disconnect",
+        _0xa299._0x26cc and _0xa299._0x26cc.connection,
+        _0xa299._0xbc30,
+        _0xa299._0xf947 and _0xa299._0xf947.connection)
+
+    dropAll("Destroy",
+        _0xa299._0x761f, _0xa299._0x2464, _0xa299._0x9e92,
+        _0xa299._0x036c, _0xa299._0xd80f, _0xa299._0x053d)
+
+    -- Library:Unload did NOT exist before library v4.7 - calling it was
+    -- erroring on a nil value, which is the other half of why the menu
+    -- never closed. raw.githubusercontent caches for ~5 minutes, so a user
+    -- who loaded in that window can still be on the old library: fall back
+    -- to destroying the protected ScreenGui directly rather than erroring
+    -- again.
+    if lib then
+        if type(lib.Unload) == "function" then
+            pcall(function() lib:Unload() end)
+        elseif lib._ScreenGui then
+            pcall(function() lib._ScreenGui:Destroy() end)
+        end
+        lib._isLoadingConfig = wasLoading
     end
-    if _0xa299._0x2464 then
-        _0xa299._0x2464:Destroy()
-    end
-    if _0xa299._0x9e92 then
-        _0xa299._0x9e92:Destroy()
-    end
-    if _0xa299._0x036c then
-        _0xa299._0x036c:Destroy()
-    end
-    if _0xa299._0xd80f then
-        _0xa299._0xd80f:Destroy()
-    end
-    if _0xa299._0x053d then
-        _0xa299._0x053d:Destroy()
-    end
-    _0xa299._0x8545:Unload()
+
     _0xa299._0x1cc0 = false
 end)
 
