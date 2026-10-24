@@ -677,6 +677,7 @@ _0xa299._0xCLOTHBOX = _0xa299._0x5ba1:AddRightGroupbox('Clothing')
 _0xa299._0xc0ed = _0xa299._0x5ba1:AddLeftGroupbox('Quick Options')
 _0xa299._0xUPGR = _0xa299._0x5ba1:AddRightGroupbox('Upgrades')
 _0xa299._0xDISP = _0xa299._0x5ba1:AddLeftGroupbox('Display')
+_0xa299._0xCOSM = _0xa299._0x5ba1:AddRightGroupbox('Cosmetics')
 
 ---------------------------------------------------------------------
 -- VISUALS TAB WITH SUBTABS
@@ -47042,6 +47043,318 @@ task.delay(1, function()
 end)
 
 ---------------------------------------------------------------------
+-- WEAPON COSMETICS
+--
+-- Where the models come from, because it is not obvious and it took a live
+-- probe to settle:
+--
+-- Weapon models live in ServerStorage.Weapons (GameManager 6323), and
+-- ServerStorage is EMPTY on the client - measured, 0 children, no Weapons
+-- folder - with no copy anywhere in ReplicatedStorage. So the game cannot be
+-- asked for a skin's model at all.
+--
+-- What IS reachable are the SHOP DISPLAY STANDS: plain workspace children
+-- named after the weapon, holding the real geometry. Spooky Raijin Kunai's
+-- blade is rbxassetid://118313082070652 with texture 128203743367478, plus a
+-- separate Skull sub-model. They exist only while streamed in, so this
+-- harvests whatever is loaded and caches it to disk - walk past a shop once
+-- and those skins are recorded for good.
+--
+-- Scanning is by workspace CHILD NAME against the known weapon list, not by
+-- hunting the `Buyable` marker through GetDescendants: the name test is exact
+-- and costs a few hundred comparisons, where the descendant sweep measured
+-- 136 ms.
+--
+-- TWO THINGS THIS CANNOT DO, both measured rather than assumed:
+--
+--  * Metal tiers are indistinguishable. Golden, Silver and Onyx Zabunagi
+--    displays are byte-identical - same three meshes, same colour
+--    (163,162,165), same material, same reflectance. The stands are unpainted
+--    and the tier look is applied server-side, so only event/unique skins are
+--    worth collecting.
+--
+--  * It is client-side ONLY. The server owns the equipped model and client
+--    property writes do not replicate, so nobody else sees your skin.
+---------------------------------------------------------------------
+_0xa299._0xSkinFile = "Bloodlines/weapon_skins.json"
+_0xa299._0xSkinCache = {}      -- name -> { type, parts = { {n, mesh, tex, c, mat, refl, vol} } }
+_0xa299._0xSkinCurrent = "None"
+_0xa299._0xSkinOriginal = nil  -- what the equipped weapon looked like before
+_0xa299._0xSkinDropdown = nil
+
+-- Every weapon item in GameManager with Weapon = true, by CombatType. Used to
+-- recognise a display stand and to seed the dropdown before anything is
+-- harvested.
+_0xa299._0xSkinKnown = {
+    ["Golden Asumai"] = "Asumai", ["Onyx Asumai"] = "Asumai", ["Silver Asumai"] = "Asumai",
+    ["Chakra Bow"] = "Bow", ["Metallic Bow"] = "Bow", ["Valentine Bow"] = "Bow",
+    ["Bloody Executioner's Blade"] = "Greatsword", ["Cursed Zabunagi"] = "Greatsword",
+    ["Executioner's Blade"] = "Greatsword", ["Frozen Executioner's Blade"] = "Greatsword",
+    ["Gingerbread Gunbai"] = "Greatsword", ["Golden Zabunagi"] = "Greatsword",
+    ["Gunbai"] = "Greatsword", ["Infernal Zabunagi"] = "Greatsword",
+    ["Onyx Zabunagi"] = "Greatsword", ["Pumpkin Samehada"] = "Greatsword",
+    ["Samehada"] = "Greatsword", ["Silver Zabunagi"] = "Greatsword",
+    ["Spider Gunbai"] = "Greatsword", ["Tree Samehada"] = "Greatsword",
+    ["Adamantine Staff"] = "Halberd", ["Cursed Trident"] = "Halberd",
+    ["Golden Halberd"] = "Halberd", ["Infernal Trident"] = "Halberd",
+    ["Jingle Bell Staff"] = "Halberd", ["Onyx Halberd"] = "Halberd",
+    ["Silver Halberd"] = "Halberd", ["Skeletal Adamantine Staff"] = "Halberd",
+    ["Cursed Dagger"] = "Kunai", ["Golden Kunai"] = "Kunai",
+    ["Infernal Dagger"] = "Kunai", ["Nutcracker Raijin"] = "Kunai",
+    ["Onyx Kunai"] = "Kunai", ["Raijin Kunai"] = "Kunai",
+    ["Silver Kunai"] = "Kunai", ["Spooky Raijin Kunai"] = "Kunai",
+    ["Candy Cane Kusanagi"] = "Sword", ["Cursed Sword"] = "Sword",
+    ["Golden Resanagi"] = "Sword", ["Hallowed Kusanagi"] = "Sword",
+    ["Infernal Sword"] = "Sword", ["Kusanagi"] = "Sword",
+    ["Onyx Resanagi"] = "Sword", ["Silver Resanagi"] = "Sword",
+}
+
+-- Read one MeshPart into a plain record. Colour is stored as 0-255 ints so the
+-- JSON round-trips without float drift.
+function _0xa299._0xSkinReadPart(part)
+    return {
+        n = part.Name,
+        mesh = part.MeshId,
+        tex = (part.TextureID ~= "" and part.TextureID) or nil,
+        c = { math.floor(part.Color.R * 255 + 0.5),
+              math.floor(part.Color.G * 255 + 0.5),
+              math.floor(part.Color.B * 255 + 0.5) },
+        mat = tostring(part.Material):gsub("Enum%.Material%.", ""),
+        refl = part.Reflectance,
+        -- Ranking key for the positional fallback below.
+        vol = part.Size.X * part.Size.Y * part.Size.Z,
+    }
+end
+
+function _0xa299._0xSkinSave()
+    if not writefile then return end
+    pcall(function()
+        if makefolder then pcall(function() makefolder("Bloodlines") end) end
+        writefile(_0xa299._0xSkinFile,
+            _0xa299._0x5f86:JSONEncode(_0xa299._0xSkinCache))
+    end)
+end
+
+function _0xa299._0xSkinLoad()
+    if not (isfile and readfile) then return end
+    pcall(function()
+        if isfile(_0xa299._0xSkinFile) then
+            local t = _0xa299._0x5f86:JSONDecode(readfile(_0xa299._0xSkinFile))
+            if type(t) == "table" then _0xa299._0xSkinCache = t end
+        end
+    end)
+end
+
+-- Record every display stand currently streamed in. Returns how many names
+-- were new, so the caller only rewrites the file and the dropdown when
+-- something actually changed.
+function _0xa299._0xSkinScan()
+    local added = 0
+    for _, child in ipairs(workspace:GetChildren()) do
+        local kind = _0xa299._0xSkinKnown[child.Name]
+        -- Re-record only if we have nothing; a stand cannot change.
+        if kind and not _0xa299._0xSkinCache[child.Name] then
+            local parts = {}
+            if child:IsA("MeshPart") then
+                table.insert(parts, _0xa299._0xSkinReadPart(child))
+            end
+            for _, d in ipairs(child:GetDescendants()) do
+                if d:IsA("MeshPart") then
+                    table.insert(parts, _0xa299._0xSkinReadPart(d))
+                end
+            end
+            if #parts > 0 then
+                _0xa299._0xSkinCache[child.Name] = { type = kind, parts = parts }
+                added = added + 1
+            end
+        end
+    end
+    if added > 0 then
+        _0xa299._0xSkinSave()
+        _0xa299._0xSkinRefreshList()
+    end
+    return added
+end
+
+-- Dropdown entries: harvested names first with a tick, then the rest so it is
+-- obvious what still needs collecting.
+function _0xa299._0xSkinRefreshList()
+    if not _0xa299._0xSkinDropdown then return end
+    local got, missing = {}, {}
+    for name in pairs(_0xa299._0xSkinKnown) do
+        if _0xa299._0xSkinCache[name] then
+            table.insert(got, name)
+        else
+            table.insert(missing, name .. "  (not collected)")
+        end
+    end
+    table.sort(got)
+    table.sort(missing)
+
+    local list = { "None" }
+    for _, v in ipairs(got) do table.insert(list, v) end
+    for _, v in ipairs(missing) do table.insert(list, v) end
+    pcall(function() _0xa299._0xSkinDropdown:Refresh(list) end)
+end
+
+-- The equipped weapon, which the server parents into the character under the
+-- item's own name - so the known list identifies it.
+function _0xa299._0xSkinEquipped()
+    local char = _0xa299._0x396d.Character
+    if not char then return nil end
+    for _, c in ipairs(char:GetChildren()) do
+        if _0xa299._0xSkinKnown[c.Name] and (c:IsA("Model") or c:IsA("MeshPart")) then
+            return c
+        end
+    end
+    return nil
+end
+
+local function skinParts(weapon)
+    local out = {}
+    if weapon:IsA("MeshPart") then table.insert(out, weapon) end
+    for _, d in ipairs(weapon:GetDescendants()) do
+        if d:IsA("MeshPart") then table.insert(out, d) end
+    end
+    return out
+end
+
+function _0xa299._0xSkinRestore()
+    local o = _0xa299._0xSkinOriginal
+    _0xa299._0xSkinOriginal = nil
+    if not o then return end
+    for _, e in ipairs(o) do
+        pcall(function()
+            if e.part and e.part.Parent then
+                e.part.MeshId = e.mesh
+                e.part.TextureID = e.tex
+                e.part.Color = e.color
+                e.part.Material = e.mat
+                e.part.Reflectance = e.refl
+            end
+        end)
+    end
+end
+
+-- Paint a harvested skin onto the equipped weapon.
+--
+-- Matching is by PART NAME first, which is exact within a family: the equipped
+-- Golden Zabunagi and its display stand both carry Blade / MeshPart / Handle
+-- with the same three mesh ids.
+--
+-- Across families the names do not line up at all (Spooky Raijin's main piece
+-- is "Meshpart", a plain Raijin Kunai's is "Raijin Kunai"), so anything left
+-- over falls back to matching by SIZE ORDER - biggest skin piece onto biggest
+-- equipped piece. That gets the blade, which is nearly all of what is visible.
+function _0xa299._0xSkinApply(name)
+    local rec = _0xa299._0xSkinCache[name]
+    if not rec then return false, "not collected yet" end
+
+    local weapon = _0xa299._0xSkinEquipped()
+    if not weapon then return false, "no weapon equipped" end
+
+    _0xa299._0xSkinRestore()
+
+    local mine = skinParts(weapon)
+    if #mine == 0 then return false, "weapon has no mesh parts" end
+
+    -- Snapshot before touching anything, so Restore is exact.
+    local snap = {}
+    for _, part in ipairs(mine) do
+        table.insert(snap, { part = part, mesh = part.MeshId, tex = part.TextureID,
+                             color = part.Color, mat = part.Material,
+                             refl = part.Reflectance })
+    end
+    _0xa299._0xSkinOriginal = snap
+
+    local function paint(part, src)
+        pcall(function()
+            part.MeshId = src.mesh
+            part.TextureID = src.tex or ""
+            part.Color = Color3.fromRGB(src.c[1], src.c[2], src.c[3])
+            part.Material = Enum.Material[src.mat] or part.Material
+            part.Reflectance = src.refl or 0
+        end)
+    end
+
+    local usedSrc, usedMine = {}, {}
+    for si, src in ipairs(rec.parts) do
+        for mi, part in ipairs(mine) do
+            if not usedMine[mi] and part.Name == src.n then
+                paint(part, src)
+                usedSrc[si], usedMine[mi] = true, true
+                break
+            end
+        end
+    end
+
+    -- Positional fallback, largest first on both sides.
+    local leftSrc, leftMine = {}, {}
+    for si, src in ipairs(rec.parts) do
+        if not usedSrc[si] then table.insert(leftSrc, src) end
+    end
+    for mi, part in ipairs(mine) do
+        if not usedMine[mi] then table.insert(leftMine, part) end
+    end
+    table.sort(leftSrc, function(a, b) return (a.vol or 0) > (b.vol or 0) end)
+    table.sort(leftMine, function(a, b)
+        return (a.Size.X * a.Size.Y * a.Size.Z) > (b.Size.X * b.Size.Y * b.Size.Z)
+    end)
+    for i = 1, math.min(#leftSrc, #leftMine) do
+        paint(leftMine[i], leftSrc[i])
+    end
+
+    return true
+end
+
+do
+    _0xa299._0xSkinLoad()
+
+    _0xa299._0xSkinDropdown = _0xa299._0xCOSM:AddDropdown("Weapon",
+        { "None" }, "None", function(Value)
+            -- Strip the collection marker the list adds.
+            local name = tostring(Value or "None"):gsub("%s*%(not collected%)$", "")
+            _0xa299._0xSkinCurrent = name
+
+            if name == "None" then
+                _0xa299._0xSkinRestore()
+                return
+            end
+            local ok, why = _0xa299._0xSkinApply(name)
+            if not ok then
+                _0xa299._0x8545:Notify("Cosmetics", tostring(why), 4, "warning")
+            end
+        end)
+
+    _0xa299._0xSkinRefreshList()
+
+    -- Harvest on a slow loop plus on streaming, and re-apply after a respawn
+    -- (the server hands out a fresh weapon model, so the paint is lost).
+    task.spawn(function()
+        while true do
+            pcall(_0xa299._0xSkinScan)
+            task.wait(5)
+        end
+    end)
+
+    workspace.ChildAdded:Connect(function(child)
+        if _0xa299._0xSkinKnown[child.Name] then
+            task.delay(0.5, function() pcall(_0xa299._0xSkinScan) end)
+        end
+    end)
+
+    _0xa299._0x396d.CharacterAdded:Connect(function()
+        _0xa299._0xSkinOriginal = nil
+        if _0xa299._0xSkinCurrent ~= "None" then
+            task.delay(2, function()
+                pcall(function() _0xa299._0xSkinApply(_0xa299._0xSkinCurrent) end)
+            end)
+        end
+    end)
+end
+
+
+---------------------------------------------------------------------
 -- GENJUTSU COUNTERS (ported from PRIVATE, 2026-10-22)
 ---------------------------------------------------------------------
 
@@ -47150,6 +47463,72 @@ do
             _0xa299._0x8545:Notify("Combat", "No Crow Illusion Shake disabled", 3, "info")
         end
     end, {Type = "info", Text = "Stops crow illusion shaking your camera"})
+end
+
+---------------------------------------------------------------------
+-- ANTI FOG ILLUSION
+--
+-- The whole effect is one client call. The server sends your client
+-- "FogIllusion" and the game's handler does exactly this (client 18888):
+--     require(Rep.Effects.FogIllusion.EffectsModule).StartVFX(p144, nil, nil, p145, p146)
+-- and on "StopFogIllusion" calls StopVFX() and re-applies the location
+-- ambience. Nothing else reads it - unlike Scrambled Mind there is no
+-- attribute driving the visuals, so there is nothing to clear; killing that
+-- one call is the whole feature.
+--
+-- Same approach as No Crow Illusion Shake above, which proved it on this
+-- exact module layout: require() is cached per client, so swapping StartVFX
+-- once covers every future cast, and the original goes back on toggle off.
+-- Both are plain dot calls in the game's handler, so a bare no-op is a
+-- correct replacement regardless of arity.
+--
+-- Enabling also runs the module's OWN StopVFX once, so an illusion already
+-- on screen is cleared by the game's teardown rather than by us guessing
+-- which camera and GUI state to put back.
+--
+-- Deliberately does NOT touch the `FogIllusion` character attribute: the
+-- visuals do not come from it, and Auto Genjutsu Release below uses it as
+-- its trigger. Clearing it would quietly stop that feature firing.
+---------------------------------------------------------------------
+_0xa299._0xAntiFog = false
+do
+    local M, origStart
+
+    local function resolve()
+        if M then return true end
+        pcall(function()
+            M = require(_0xa299._0xe08d.Effects.FogIllusion.EffectsModule)
+        end)
+        if type(M) ~= "table" or type(M.StartVFX) ~= "function" then
+            M = nil
+            return false
+        end
+        origStart = M.StartVFX
+        return true
+    end
+
+    _0xa299._0xGENJ:AddToggle("Anti Fog Illusion", false, function(Value)
+        _0xa299._0xAntiFog = Value
+        if Value then
+            if not resolve() then
+                _0xa299._0xAntiFog = false
+                _0xa299._0x8545:Notify("Combat", "Could not hook Fog Illusion module", 5, "error")
+                return
+            end
+            pcall(function() if setreadonly then setreadonly(M, false) end end)
+            M.StartVFX = function() return nil end
+            if type(M.StopVFX) == "function" then
+                pcall(function() M.StopVFX() end)
+            end
+            _0xa299._0x8545:Notify("Combat", "Anti Fog Illusion enabled", 3, "check")
+        else
+            if M and origStart then
+                pcall(function() if setreadonly then setreadonly(M, false) end end)
+                M.StartVFX = origStart
+            end
+            _0xa299._0x8545:Notify("Combat", "Anti Fog Illusion disabled", 3, "info")
+        end
+    end, {Type = "info", Text = "Stops fog illusion taking over your camera and screen"})
 end
 
 ---------------------------------------------------------------------
