@@ -32307,6 +32307,17 @@ _0xa299._0xGaaraShieldOffset = 38
 -- observed reach by ~25 studs, and both moves are short windows, so there is
 -- nothing to gain from a tighter number.
 _0xa299._0xGaaraCoffinOffset = 38
+
+-- SAND STORM: hold block through it instead of flying out.
+--
+-- See the storm branch in _0xGaaraDodge for why this works (the move is
+-- Blockable, and BreakBlockLight only breaks a block on a hit to the BACK).
+-- Set false to go back to leaving on _0xGaaraStormOffset.
+_0xa299._0xGaaraStormBlock = true
+-- Grace on the blocking state. One storm tick is 0.5 s and the whole move is
+-- 8 of them, so this is long enough to bridge a frame where the instance
+-- blinks but short enough that we are back on him promptly once it ends.
+_0xa299._0xGaaraStormBlockHold = 0.6
 -- The shield's own `task.wait(5)`, plus a moment for the last tick to pass.
 _0xa299._0xGaaraShieldHold = 5.5
 -- The coffin is destroyed by Debris:AddItem(clone, 4) and anchored at 4 s.
@@ -32343,6 +32354,11 @@ _0xa299._0xGaaraState = {
     coffin = nil,         -- the live "Sand Coffin<boss>" projectile, if any
     coffinUntil = 0,
     suspUntil = 0,        -- set by the circleWarning remote; no instance to hold
+    -- Refreshed by the dodge every frame a storm is up and we are choosing to
+    -- block it rather than leave. A deadline rather than a boolean so the
+    -- state survives a frame where the storm instance blinks, and so it clears
+    -- itself if the dodge stops running at all (farm off, boss switched).
+    stormBlockUntil = 0,
     animBoss = nil,       -- boss model whose Animator we hooked
     animConn = nil,
     -- Every live sandstorm, not just the most recent one. The single `storm`
@@ -32637,6 +32653,9 @@ function _0xa299._0xGaaraDisarm()
     S.shieldUntil = 0
     S.coffinUntil = 0
     S.suspUntil = 0
+    -- Must be cleared with the rest: it gates the M1 and dash loops, so a
+    -- stale deadline would leave a restarted farm standing still.
+    S.stormBlockUntil = 0
     S.animBoss = nil
     S.animConn = nil
     S.storms = {}
@@ -32731,13 +32750,29 @@ function _0xa299._0xGaaraDodge(bossHrp)
     end
 
     -- Storm: while it exists near the boss.
+    --
+    -- Two ways to handle it, picked by _0xGaaraStormBlock. Leaving (the
+    -- original) costs the whole move's damage uptime; blocking costs nothing
+    -- and is viable because of two things in the game's own code:
+    --   * Gaara Storm / Gaara Storms are `Blockable = true` (7 damage x 8
+    --     repeats @ 0.5 s, plus Bleed 3), so a held block actually stops it.
+    --   * `GameManager.BreakBlockLight` raycasts from the attacker to us
+    --     against {Torso, Back} and breaks the block ONLY when it hits
+    --     "Back". The farm always faces the boss, so the ray lands on Torso
+    --     and the block survives the whole move.
+    -- Anything else that comes up mid-storm (coffin, shield) still wants its
+    -- own offset below/above this, so a real threat still moves us.
     if S.storm then
         if not S.storm.Parent then
             S.storm = nil
         elseif bossHrp then
             local p = _0xGaaraPos(S.storm)
             if p and (p - bossHrp.Position).Magnitude <= _0xa299._0xGaaraNear then
-                want(_0xa299._0xGaaraStormOffset)
+                if _0xa299._0xGaaraStormBlock then
+                    S.stormBlockUntil = tick() + _0xa299._0xGaaraStormBlockHold
+                else
+                    want(_0xa299._0xGaaraStormOffset)
+                end
             end
         end
     end
@@ -32937,6 +32972,54 @@ _0xa299._0xGaaraV2Spots = {
 _0xa299._0xGaaraV2Step = 0.3       -- seconds between hops
 
 _0xa299._0xGaaraV2 = { running = false, abort = false }
+
+-- Are we currently choosing to block a sand storm rather than leave?
+--
+-- The farm keeps attacking, dashing and charging straight through this - the
+-- whole point is not losing the move's damage uptime. Worth knowing what that
+-- means, since it is a deliberate trade rather than an oversight:
+--   * The real client refuses to M1 (client 10427) or dash (11798) while
+--     Blocking is true, so firing them anyway is a combination a legitimate
+--     client never sends. Accepted knowingly.
+--   * Those remotes may also set Occupied, which is one of the conditions
+--     that makes the game's own attemptBlock bail (client ~9015), so the
+--     block may well drop and be re-taken repeatedly rather than held.
+--     Survivable only because _0xAssertBlock runs every frame, so a dropped
+--     block is back up on the next one instead of for the rest of the move.
+-- The server's CheckMeleeHit handler is not in any dump, so whether an M1
+-- while blocking is accepted at all is UNVERIFIED - watch the boss's HP and
+-- Settings.Blocking during a real storm before trusting this.
+function _0xa299._0xGaaraStormBlocking()
+    local S = _0xa299._0xGaaraState
+    return S ~= nil and tick() < (S.stormBlockUntil or 0)
+end
+
+-- Put the block back up if it is down. Fire-and-forget, because InvokeServer
+-- yields and the callers are a Heartbeat.
+--
+-- The latch matters: without it a 60 Hz caller would queue dozens of
+-- overlapping invokes while the first was still in flight, and the server
+-- call is a TOGGLE pair with EndBlock - a pile of them is exactly how you end
+-- up blocking and unblocking instead of holding.
+_0xa299._0xBlockAsserting = false
+function _0xa299._0xAssertBlock()
+    if _0xa299._0xBlockAsserting then return end
+
+    local RS = _0xa299._0xe08d
+    local settings = RS and RS:FindFirstChild("Settings")
+    local mine = settings and settings:FindFirstChild(_0xa299._0x396d.Name)
+    local blocking = mine and mine:FindFirstChild("Blocking")
+    if not blocking or blocking.Value == true then return end
+
+    _0xa299._0xBlockAsserting = true
+    task.spawn(function()
+        pcall(function()
+            RS:WaitForChild("Events"):WaitForChild("DataFunction")
+                :InvokeServer("Block", 2)
+        end)
+        _0xa299._0xBlockAsserting = false
+    end)
+end
 
 -- Is the sand cocoon up right now?
 --
@@ -34185,6 +34268,11 @@ function _0xa299._0xa94c()
             local meleeCooldown = userSettings:FindFirstChild("MeleeCooldown")
             
             -- Auto M1 (skip if using binding seal)
+            --
+            -- Deliberately NOT gated on the sand-storm block. Damage uptime
+            -- through the storm is the point; the block is asserted from the
+            -- Heartbeat every frame, so if an M1 does drop it we are blocking
+            -- again on the next frame rather than for the rest of the move.
             if _0xa299._0x1915.autoM1 and meleeCooldown and not _0xa299._0x1915.usingBindingSeal then
                 local args = {"CheckMeleeHit", nil, "NormalAttack", false, 2}
                 RS.Events.DataEvent:FireServer(unpack(args, 1, 5))
@@ -34219,7 +34307,7 @@ function _0xa299._0xa94c()
                     DataEvent:FireServer("Dash", "Sub", _0xa299._0x396d.Character.HumanoidRootPart.Position)
                 end
             end
-            
+
             -- Auto blocking (skip when using binding seal for tailed beasts)
             if not _0xa299._0x1915.usingBindingSeal then
                 if RS.Settings:FindFirstChild(_0xa299._0x396d.Name) and RS.Settings[_0xa299._0x396d.Name]:FindFirstChild("Blocking") then
@@ -36329,6 +36417,17 @@ function _0xa299._0xa94c()
         local dangerOverride = nil
         if config.customDanger == "Gaara" then
             dangerOverride = _0xa299._0xGaaraDodge(bossHrp)
+
+            -- Sand storm: the dodge has decided to block it rather than
+            -- leave, so keep the block up. Asserted here, every frame, rather
+            -- than in the 0.2 s block loop - a storm tick lands every 0.5 s,
+            -- so a 0.2 s gap is enough to eat one unblocked. The farm keeps
+            -- attacking through this, which may itself drop the block, so
+            -- per-frame is doing real work here rather than being belt-and-
+            -- braces.
+            if _0xa299._0xGaaraStormBlocking() then
+                _0xa299._0xAssertBlock()
+            end
 
             -- Anti-despawn roam. Two versions, picked by the toggle.
             --
