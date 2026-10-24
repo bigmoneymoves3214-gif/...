@@ -1334,6 +1334,33 @@ function _0xa299._0xVelSettle(part)
 end
 
 ---------------------------------------------------------------------
+-- HOVER BOB (anti-fingerprint)
+--
+-- A hover that holds one exact height forever is the other half of the
+-- velocity tell above: even with the velocity noise band, Y never changing
+-- across any number of samples is its own signature. So for bosses that set
+-- `hoverBob` in their config, drift the hover height up and down by a couple
+-- of tenths of a stud instead of holding it.
+--
+-- Returns BOTH the offset delta and its time derivative, because they have to
+-- be written together. Position that moves while the reported velocity sits
+-- in a 1e-6 noise band is exactly the same contradiction as a frozen position
+-- with a zero velocity - the server can difference two position samples and
+-- compare. So the caller writes this dy into AssemblyLinearVelocity.Y and the
+-- two agree the way real physics would.
+--
+-- d/dt [A*sin(wt)] = A*w*cos(wt), so with A = 0.35 and 0.55 Hz the velocity
+-- swings about +/-1.2 studs/s - the sort of reading a character settling on a
+-- surface produces, and nowhere near fast enough to affect melee range.
+---------------------------------------------------------------------
+function _0xa299._0xHoverBobAt(config, t)
+    local amp = config and config.hoverBob
+    if not amp then return 0, nil end
+    local w = (config.hoverBobRate or 0.55) * 2 * math.pi
+    return math.sin(t * w) * amp, math.cos(t * w) * amp * w
+end
+
+---------------------------------------------------------------------
 -- M1 / melee hit (correct arity)
 --
 -- The live v1551 client ALWAYS fires five arguments:
@@ -33559,7 +33586,14 @@ _0xa299._0x5ecb = {
         -- boss that is landing hits is plainly still engaged.
         -- See _0xa299._0xAntiDespawnTick.
         antiDespawnDamage = 1,
-        antiDespawnEvery = 10
+        antiDespawnEvery = 10,
+        -- Drift the hover height instead of holding exactly +10 forever, and
+        -- report a velocity that matches the drift. Gaara only for now - this
+        -- is the boss we have a despawn problem with, so it is the one worth
+        -- changing while the rest of the farm stays as it was for comparison.
+        -- See _0xa299._0xHoverBobAt for why both halves are needed.
+        hoverBob = 0.35,       -- studs, peak either side of the base offset
+        hoverBobRate = 0.55    -- Hz, so a full up-down takes ~1.8s
     }
 }
 
@@ -35887,7 +35921,28 @@ function _0xa299._0xa94c()
         --
         -- Set _0xa299._0xHoverHardZero = false to go back to the jittered
         -- near-zero used everywhere else (_0xVelSettle).
-        if _0xa299._0xHoverHardZero then
+        --
+        -- A boss with `hoverBob` set opts out of the hard zero entirely: its
+        -- hover height moves, so the velocity has to move with it or the two
+        -- contradict each other. Phase is computed ONCE here and stashed for
+        -- the position write further down, so the dy we report and the dy we
+        -- actually apply come from the same instant rather than two tick()
+        -- calls a few hundred microseconds apart.
+        local bobY, bobVY = _0xa299._0xHoverBobAt(config, tick())
+        _0xa299._0x1915.bobY = bobY
+
+        if bobVY then
+            -- Same noise band as _0xVelSettle on the axes that are not moving,
+            -- but the real bob slope on Y. Inlined rather than calling
+            -- _0xVelSettle first and overwriting Y, which would emit two
+            -- different velocities for one frame.
+            hrp.AssemblyLinearVelocity = Vector3.new(
+                (math.random() - 0.5) * 2e-6, bobVY, (math.random() - 0.5) * 2e-6)
+            hrp.AssemblyAngularVelocity = Vector3.new(
+                (math.random() - 0.5) * 4e-6,
+                (math.random() - 0.5) * 2e-13,
+                (math.random() - 0.5) * 4e-6)
+        elseif _0xa299._0xHoverHardZero then
             hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
             hrp.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
         else
@@ -36336,7 +36391,13 @@ function _0xa299._0xa94c()
             local abovePos = bossHrp.Position + Vector3.new(0, 0.5, 0)
             hrp.CFrame = CFrame.new(abovePos, bossHrp.Position)
         else
-            local finalOffset = dangerOverride or (offset + extraOffset)
+            -- The bob rides on the normal hover only. A dodge offset is a
+            -- considered distance from something that is about to hurt us, so
+            -- it is used exactly as given rather than wobbled.
+            local finalOffset = dangerOverride
+            if not finalOffset then
+                finalOffset = offset + extraOffset + (_0xa299._0x1915.bobY or 0)
+            end
             local abovePos = bossHrp.Position + Vector3.new(0, finalOffset, 0)
             hrp.CFrame = CFrame.new(abovePos, bossHrp.Position)
         end
