@@ -29015,6 +29015,13 @@ function _0xa299._0xProgWipe()
     local ageAfter = _0xa299._0xGetPlayerAge()
     if ageAfter and ageBefore and ageAfter < ageBefore then
         _0xa299._0xProgBuild.wiped = true
+
+        -- Tell the loop to start over. Without this it carries on inside the
+        -- age-wait loop forever: that loop exits on newAge > currentAge, and a
+        -- wipe makes the age go DOWN (28 -> 1), so the test can never pass
+        -- again. That is the "it still thinks it is waiting for age up".
+        _0xa299._0xAutoProg.restartCycle = true
+
         _0xa299._0x8545:Notify("Auto Prog",
             ("Wiped - age %s -> %s"):format(tostring(ageBefore), tostring(ageAfter)), 5, "check")
     else
@@ -29038,6 +29045,9 @@ _0xa299._0xAutoProg = {
     lastDebugState = "",
     lastDebugReason = "",
     alreadyBrokePoint = false,
+    restartCycle = false,   -- set by _0xProgWipe; makes the loop rejoin and start over
+    runId = 0,              -- generation, so a dead run cannot come back to life
+    dying = nil,            -- the previous run thread while it unwinds
     -- Quests whose mission the board was not offering. Boards re-roll (one
     -- with no Cratos tile had three a minute later, observed), so these are
     -- retried instead of written off. Cleared at the start of each age cycle.
@@ -29277,7 +29287,28 @@ function _0xa299._0xAutoProgCheckSafety()
     return true, nil
 end
 
-function _0xa299._0xAutoProgWaitForSafety()
+-- Is THIS run still the live one?
+--
+-- Toggling Auto Prog off and straight back on used to resurrect the old run.
+-- _0xStopAutoProg deliberately does not cancel the loop thread on the spot -
+-- it sets .enabled false and raises the quest abort flag so the quest unwinds
+-- and its own cleanup runs - so for a moment there is a thread still inside a
+-- quest. Flipping the toggle back on in that moment set .enabled true and
+-- cleared the abort flag again, and the dying thread, which tests exactly
+-- those two things, simply carried on. Two runs then drove the same quests and
+-- both wrote the status label, which is what the stuck cooldown was: the dead
+-- run counting its 10 s gap down over the new run's status.
+--
+-- Each run takes a number on the way in and only keeps going while it still
+-- holds it, so a superseded thread leaves at its next check no matter what the
+-- shared flags say.
+function _0xa299._0xAutoProgAlive(runId)
+    if not _0xa299._0xAutoProg.enabled then return false end
+    if runId ~= nil and _0xa299._0xAutoProg.runId ~= runId then return false end
+    return true
+end
+
+function _0xa299._0xAutoProgWaitForSafety(runId)
     local safe, reason = _0xa299._0xAutoProgCheckSafety()
     if not safe then
         _0xa299._0xAutoProgDebug("WAITING_SAFETY", reason)
@@ -29286,7 +29317,7 @@ function _0xa299._0xAutoProgWaitForSafety()
         _0xa299._0xAutoProgRestoreAnim()
         _0xa299._0xAutoProgStowWeapon()
     end
-    while not safe and _0xa299._0xAutoProg.enabled do
+    while not safe and _0xa299._0xAutoProgAlive(runId) do
         _0xa299._0xAutoProgUpdateGUI("autoprog_hiding", reason)
 
         if _0xa299._0x396d.Character and _0xa299._0x396d.Character:FindFirstChild("HumanoidRootPart") then
@@ -29310,11 +29341,11 @@ function _0xa299._0xAutoProgWaitForSafety()
         -- hide can leave a track running, and that is the state the user was
         -- seeing stuck.
         _0xa299._0xAutoProgRestoreAnim()
-        if _0xa299._0xAutoProg.enabled then
+        if _0xa299._0xAutoProgAlive(runId) then
             _0xa299._0xAutoProgEquipWeapon()
         end
     end
-    return _0xa299._0xAutoProg.enabled
+    return _0xa299._0xAutoProgAlive(runId)
 end
 
 function _0xa299._0xAutoProgFireEndBlock()
@@ -29533,8 +29564,8 @@ function _0xa299._0xLeaveChakraPoint(pointModel)
     return sent
 end
 
-function _0xa299._0xAutoProgBreakChakraPoint(pointName)
-    if not _0xa299._0xAutoProg.enabled then return false end
+function _0xa299._0xAutoProgBreakChakraPoint(pointName, runId)
+    if not _0xa299._0xAutoProgAlive(runId) then return false end
     
     local RS = _0xa299._0xe08d
     local VIM = game:GetService("VirtualInputManager")
@@ -29561,13 +29592,13 @@ function _0xa299._0xAutoProgBreakChakraPoint(pointName)
         pcall(function()
             local data = RS:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer("GetData")
             while data and data["InDanger"] == true do
-                if not _0xa299._0xAutoProg.enabled then return end
+                if not _0xa299._0xAutoProgAlive(runId) then return end
                 task.wait(0.5)
                 data = RS:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer("GetData")
             end
         end)
         
-        if not _0xa299._0xAutoProg.enabled then return false end
+        if not _0xa299._0xAutoProgAlive(runId) then return false end
         _0xa299._0x8545:Notify("Auto Prog", "Out of danger, continuing", 2, "check")
     end
     
@@ -29584,7 +29615,7 @@ function _0xa299._0xAutoProgBreakChakraPoint(pointName)
         return "skip"
     end
     
-    if not _0xa299._0xAutoProgWaitForSafety() then return false end
+    if not _0xa299._0xAutoProgWaitForSafety(runId) then return false end
     
     local pointPart = pointModel:FindFirstChild("ChakraPoint") or pointModel.PrimaryPart or pointModel:FindFirstChildWhichIsA("BasePart")
     if not pointPart then
@@ -29612,7 +29643,7 @@ function _0xa299._0xAutoProgBreakChakraPoint(pointName)
     
     task.wait(0.5)
     
-    if not _0xa299._0xAutoProgWaitForSafety() then return false end
+    if not _0xa299._0xAutoProgWaitForSafety(runId) then return false end
     
     _0xa299._0xAutoProgUpdateGUI("autoprog_breaking", pointName, "Pressing E...")
     VIM:SendKeyEvent(true, Enum.KeyCode.E, false, game)
@@ -29621,12 +29652,12 @@ function _0xa299._0xAutoProgBreakChakraPoint(pointName)
     
     _0xa299._0xAutoProgUpdateGUI("autoprog_breaking", pointName, "Waiting 6s...")
     for i = 6, 1, -1 do
-        if not _0xa299._0xAutoProg.enabled then return false end
+        if not _0xa299._0xAutoProgAlive(runId) then return false end
         _0xa299._0xAutoProgUpdateGUI("autoprog_breaking", pointName, "Waiting " .. i .. "s...")
         task.wait(1)
     end
     
-    if not _0xa299._0xAutoProgWaitForSafety() then return false end
+    if not _0xa299._0xAutoProgWaitForSafety(runId) then return false end
     
     _0xa299._0xAutoProgUpdateGUI("autoprog_breaking", pointName, "Pressing E again...")
     VIM:SendKeyEvent(true, Enum.KeyCode.E, false, game)
@@ -29661,7 +29692,7 @@ function _0xa299._0xAutoProgBreakChakraPoint(pointName)
     
     _0xa299._0xAutoProgUpdateGUI("autoprog_breaking", pointName, "Waiting 3s...")
     for i = 3, 1, -1 do
-        if not _0xa299._0xAutoProg.enabled then return false end
+        if not _0xa299._0xAutoProgAlive(runId) then return false end
         _0xa299._0xAutoProgUpdateGUI("autoprog_breaking", pointName, "Finishing " .. i .. "s...")
         task.wait(1)
     end
@@ -29673,8 +29704,8 @@ function _0xa299._0xAutoProgBreakChakraPoint(pointName)
     return true
 end
 
-function _0xa299._0xAutoProgCheckAndBreakPoints()
-    if not _0xa299._0xAutoProg.enabled then return end
+function _0xa299._0xAutoProgCheckAndBreakPoints(runId)
+    if not _0xa299._0xAutoProgAlive(runId) then return end
     if #_0xa299._0xAutoProg.selectedPoints == 0 then return end
     
     local ryo = _0xa299._0xAutoProgGetRyo()
@@ -29700,7 +29731,7 @@ function _0xa299._0xAutoProgCheckAndBreakPoints()
     local attemptsLeft = #_0xa299._0xAutoProg.selectedPoints
     while attemptsLeft > 0 do
         local pointName = _0xa299._0xAutoProg.selectedPoints[pointIndex]
-        local result = _0xa299._0xAutoProgBreakChakraPoint(pointName)
+        local result = _0xa299._0xAutoProgBreakChakraPoint(pointName, runId)
         
         _0xa299._0xAutoProg.currentPointIndex = pointIndex + 1
         if _0xa299._0xAutoProg.currentPointIndex > #_0xa299._0xAutoProg.selectedPoints then
@@ -29717,6 +29748,28 @@ function _0xa299._0xAutoProgCheckAndBreakPoints()
 end
 
 function _0xa299._0xStartAutoProg()
+    -- Let the previous run finish dying BEFORE touching any shared state.
+    --
+    -- _0x62f5 is a single global quest-abort flag, so clearing it while the old
+    -- quest is still unwinding tells that quest to carry on - and then two runs
+    -- fire the same remotes. Waiting on the thread itself is exact; the generation
+    -- check is the backstop for anything already past its last flag test.
+    if _0xa299._0xAutoProg.dying then
+        local waited = 0
+        while coroutine.status(_0xa299._0xAutoProg.dying) ~= "dead" and waited < 5 do
+            _0xa299._0xAutoProgUpdateGUI("autoprog_paused", "stopping previous run")
+            task.wait(0.1)
+            waited = waited + 0.1
+        end
+        if coroutine.status(_0xa299._0xAutoProg.dying) ~= "dead" then
+            -- Wedged (stuck in a WaitForChild, most likely). Killing it beats
+            -- running two.
+            _0xa299._0xAutoProgDebug("KILLED_STALE", "previous run would not stop")
+            pcall(function() task.cancel(_0xa299._0xAutoProg.dying) end)
+        end
+        _0xa299._0xAutoProg.dying = nil
+    end
+
     -- Say so rather than returning in silence. A bare return here is what made
     -- the restart bug invisible: the toggle read ON, nothing ran, and there was
     -- no indication why. The slot is released synchronously in
@@ -29769,6 +29822,8 @@ function _0xa299._0xStartAutoProg()
     _0xa299._0xAutoProg.alreadyBrokePoint = false
     _0xa299._0xAutoProg.isPanicking = false
     _0xa299._0xAutoProg.deferredQuests = {}
+    _0xa299._0xAutoProg.restartCycle = false
+    _0xa299._0xAutoProg.runId = _0xa299._0xAutoProg.runId + 1
 
     _0xa299._0xAutoProgDebug("STARTING", "Quests: " .. #_0xa299._0xAutoProg.selectedQuests)
     
@@ -29787,6 +29842,7 @@ function _0xa299._0xStartAutoProg()
     end
     _0xa299._0xAutoProgDebug("INIT", "NoFallDamage enabled")
     
+    local myRun = _0xa299._0xAutoProg.runId
     _0xa299._0xAutoProg.connection = task.spawn(function()
         local RS = _0xa299._0xe08d
         
@@ -29795,18 +29851,61 @@ function _0xa299._0xStartAutoProg()
             _0xa299._0x396d.Character.HumanoidRootPart.CFrame = _0xa299._0xdde4()
         end
         
-        _0xa299._0xAutoProgDebug("JOIN_VILLAGE", _0xa299._0xAutoProg.selectedVillage)
-        _0xa299._0xAutoProgUpdateGUI("autoprog_joining", _0xa299._0xAutoProg.selectedVillage)
-        _0xa299._0x8545:Notify("Auto Prog", "Joining village: " .. _0xa299._0xAutoProg.selectedVillage, 2, "info")
-        
-        pcall(function()
-            RS:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer("JoinVillage", _0xa299._0xAutoProg.selectedVillage)
-        end)
-        task.wait(1)
-        
+        -- Joining is part of the CYCLE, not a one-off before it.
+        --
+        -- A wipe gives you a brand new character with no village, so the run
+        -- has to begin again from here rather than carrying on mid-flight.
+        -- _0xProgWipe sets restartCycle, and the loop below comes back to this.
+        local function joinVillage()
+            _0xa299._0xAutoProgDebug("JOIN_VILLAGE", _0xa299._0xAutoProg.selectedVillage)
+            _0xa299._0xAutoProgUpdateGUI("autoprog_joining", _0xa299._0xAutoProg.selectedVillage)
+            _0xa299._0x8545:Notify("Auto Prog", "Joining village: " .. _0xa299._0xAutoProg.selectedVillage, 2, "info")
+
+            pcall(function()
+                RS:WaitForChild("Events"):WaitForChild("DataFunction"):InvokeServer("JoinVillage", _0xa299._0xAutoProg.selectedVillage)
+            end)
+            task.wait(1)
+        end
+
+        joinVillage()
+
         _0xa299._0xAutoProgDebug("LOOP_START", nil)
-        while _0xa299._0xAutoProg.enabled do
-            if not _0xa299._0xAutoProgWaitForSafety() then break end
+        while _0xa299._0xAutoProgAlive(myRun) do
+            if not _0xa299._0xAutoProgWaitForSafety(myRun) then break end
+
+            -- Came back from a wipe: new life, so start the cycle over.
+            if _0xa299._0xAutoProg.restartCycle then
+                _0xa299._0xAutoProg.restartCycle = false
+                _0xa299._0xAutoProg.currentQuestIndex = 1
+                _0xa299._0xAutoProg.currentPointIndex = 1
+                _0xa299._0xAutoProg.alreadyBrokePoint = false
+                _0xa299._0xAutoProg.deferredQuests = {}
+                _0xa299._0xAutoProg.currentAge = 0
+                _0xa299._0xProgBuild.examTried = false
+                _0xa299._0xProgItemRetry = {}
+                _0xa299._0xProgWeaponAt = 0
+                _0xa299._0xProgBuild.lastTreeRun = 0
+
+                -- Re-arm the wipe. It latches permanently on a CONFIRMED wipe
+                -- so a successful one cannot re-fire, but the whole point is a
+                -- repeating loop - build up, wipe at the age, build up again -
+                -- so a new life has to be allowed to wipe in its turn.
+                _0xa299._0xProgBuild.wiped = false
+                _0xa299._0xProgBuild.wipeAt = 0
+
+                _0xa299._0xAutoProgDebug("CYCLE_RESTART", "post-wipe")
+                _0xa299._0x8545:Notify("Auto Prog", "New life - restarting cycle", 3, "info")
+                task.wait(2)
+                joinVillage()
+            end
+
+            -- Weapon and exam up FRONT, before the quests - a rebuilt life is
+            -- unarmed and unranked, and plenty of the quests want a weapon.
+            -- Both are rate-limited and no-op when already done.
+            if _0xa299._0xProgBuild.autoWeapon then
+                pcall(_0xa299._0xProgBuyWeapon)
+            end
+            pcall(_0xa299._0xProgGeninExam)
             
             _0xa299._0xAutoProgDebug("QUEST_LOOP", "Starting " .. #_0xa299._0xAutoProg.selectedQuests .. " quests")
             _0xa299._0xAutoProg.alreadyBrokePoint = false
@@ -29816,9 +29915,9 @@ function _0xa299._0xStartAutoProg()
             _0xa299._0xAutoProg.lastDeferredRetry = tick()
             _0xa299._0xAutoProgEquipWeapon()
             for i, questName in ipairs(_0xa299._0xAutoProg.selectedQuests) do
-                if not _0xa299._0xAutoProg.enabled then break end
+                if not _0xa299._0xAutoProgAlive(myRun) then break end
 
-                if not _0xa299._0xAutoProgWaitForSafety() then break end
+                if not _0xa299._0xAutoProgWaitForSafety(myRun) then break end
 
                 _0xa299._0xAutoProg.currentQuestIndex = i
                 _0xa299._0xAutoProgUpdateGUI("autoprog_quest", questName, "(" .. i .. "/" .. #_0xa299._0xAutoProg.selectedQuests .. ")")
@@ -29834,7 +29933,7 @@ function _0xa299._0xStartAutoProg()
                     _0xa299._0xAutoProgDebug("DEFERRED", questName .. " not on board")
                 end
 
-                if not _0xa299._0xAutoProg.enabled then break end
+                if not _0xa299._0xAutoProgAlive(myRun) then break end
                 
                 if i < #_0xa299._0xAutoProg.selectedQuests then
                     _0xa299._0xAutoProgDebug("COOLDOWN", "10s before next quest")
@@ -29853,7 +29952,7 @@ function _0xa299._0xStartAutoProg()
                     end
                     
                     for countdown = 10, 1, -1 do
-                        if not _0xa299._0xAutoProg.enabled then break end
+                        if not _0xa299._0xAutoProgAlive(myRun) then break end
                         _0xa299._0xAutoProgUpdateGUI("autoprog_cooldown", tostring(countdown))
                         
                         if _0xa299._0x396d.Character and _0xa299._0x396d.Character:FindFirstChild("HumanoidRootPart") then
@@ -29873,7 +29972,7 @@ function _0xa299._0xStartAutoProg()
                 end
             end
             
-            if not _0xa299._0xAutoProg.enabled then break end
+            if not _0xa299._0xAutoProgAlive(myRun) then break end
             
             _0xa299._0xAutoProg.currentAge = _0xa299._0xGetPlayerAge()
             _0xa299._0xAutoProgDebug("WAITING_AGE", "Current age: " .. _0xa299._0xAutoProg.currentAge)
@@ -29884,13 +29983,10 @@ function _0xa299._0xStartAutoProg()
             -- safespot doing nothing until the age ticks over. Both are
             -- internally rate-limited and latched, so running them on every
             -- pass through here is cheap.
-            -- Weapon first: the tree's Taijutsu path and the boss farm both
-            -- want one, and a rebuilt life starts on Fist. Internally
-            -- rate-limited and a no-op when already armed.
-            if _0xa299._0xProgBuild.autoWeapon then
-                pcall(_0xa299._0xProgBuyWeapon)
-            end
-            pcall(_0xa299._0xProgGeninExam)
+            -- Weapon and exam are handled at the TOP of the cycle now, before
+            -- the quests, so they are not repeated here. The tree pass stays:
+            -- this is the idle window it wants, and it needs the shards the
+            -- point breaking below produces.
             pcall(_0xa299._0xProgSkillTreePass)
 
             if _0xa299._0x396d.Character and _0xa299._0x396d.Character:FindFirstChild("HumanoidRootPart") then
@@ -29902,7 +29998,7 @@ function _0xa299._0xStartAutoProg()
                 _0xa299._0x220a.applySpoofProtection()
             end
             
-            while _0xa299._0xAutoProg.enabled and not ageChanged do
+            while _0xa299._0xAutoProgAlive(myRun) and not ageChanged do
                 if _0xa299._0x396d.Character and _0xa299._0x396d.Character:FindFirstChild("HumanoidRootPart") then
                     _0xa299._0x396d.Character.HumanoidRootPart.CFrame = _0xa299._0xdde4()
                 end
@@ -29919,7 +30015,7 @@ function _0xa299._0xStartAutoProg()
                     if _0xa299._0x220a.spoofLoadingIn then
                         _0xa299._0x220a.removeSpoofProtection()
                     end
-                    _0xa299._0xAutoProgCheckAndBreakPoints()
+                    _0xa299._0xAutoProgCheckAndBreakPoints(myRun)
                     if _0xa299._0x220a.spoofLoadingIn then
                         _0xa299._0x220a.applySpoofProtection()
                     end
@@ -29981,8 +30077,8 @@ function _0xa299._0xStartAutoProg()
 
                     local stillMissing = {}
                     for _, deferredName in ipairs(_0xa299._0xAutoProg.deferredQuests) do
-                        if not _0xa299._0xAutoProg.enabled then break end
-                        if not _0xa299._0xAutoProgWaitForSafety() then break end
+                        if not _0xa299._0xAutoProgAlive(myRun) then break end
+                        if not _0xa299._0xAutoProgWaitForSafety(myRun) then break end
                         _0xa299._0xAutoProgUpdateGUI("autoprog_quest", deferredName, "(retry)")
                         _0xa299._0xAutoProgExecuteQuest(deferredName)
                         if _0xa299._0xMissionUnavailable == deferredName then
@@ -30003,6 +30099,24 @@ function _0xa299._0xStartAutoProg()
                     end
                 end
                 
+                -- Restart requested (a confirmed wipe), or the age went
+                -- BACKWARDS - which only happens on a reincarnation. Either
+                -- way this life is over, so leave the wait loop; the cycle
+                -- restart at the top of the outer loop handles the rest.
+                --
+                -- The age-drop test is a backstop: if a wipe ever happens
+                -- without restartCycle being set (a manual wipe, Auto Wipe
+                -- running alongside this), the loop would otherwise spin here
+                -- forever waiting for an age it already passed.
+                if _0xa299._0xAutoProg.restartCycle
+                   or (newAge and newAge < _0xa299._0xAutoProg.currentAge) then
+                    _0xa299._0xAutoProg.restartCycle = true
+                    _0xa299._0xAutoProgDebug("WIPE_DETECTED",
+                        tostring(_0xa299._0xAutoProg.currentAge) .. " -> " .. tostring(newAge))
+                    ageChanged = true
+                    break
+                end
+
                 if newAge > _0xa299._0xAutoProg.currentAge then
                     ageChanged = true
                     _0xa299._0xAutoProgDebug("AGE_UP", _0xa299._0xAutoProg.currentAge .. " -> " .. newAge)
@@ -30077,9 +30191,15 @@ function _0xa299._0xStopAutoProg()
     -- instead of the old one.
     local stopping = _0xa299._0xAutoProg.connection
     _0xa299._0xAutoProg.connection = nil
+    -- Kept where a restart can see it, so _0xStartAutoProg waits this thread
+    -- out instead of racing it over _0x62f5 and the status label.
+    _0xa299._0xAutoProg.dying = stopping
     task.delay(5, function()
         if stopping then
             pcall(function() task.cancel(stopping) end)
+        end
+        if _0xa299._0xAutoProg.dying == stopping then
+            _0xa299._0xAutoProg.dying = nil
         end
     end)
     
