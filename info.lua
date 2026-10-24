@@ -3272,6 +3272,37 @@ _0xa299._0x7b58 = _0xa299._0x07b1:AddToggle("Noclip", false, function(Value)
 end, {Type = "info", Text = "Pass through walls and objects"})
 
 ---------------------------------------------------------------------
+-- DASH IN PROGRESS?
+--
+-- Shared by Auto Run and Omnimovement, both of which enforce a WalkSpeed
+-- every Heartbeat frame and so would otherwise stomp a dash flat.
+--
+-- A flicker dash raises WalkSpeed well above anything we set - 80 base, 100
+-- with the Agile trait or Shisui Flicker, 150 under Red Gates (client
+-- 12043-12085) - and holds it for 0.4-0.5 s. Writing 28 on the next frame is
+-- why the dash produced the animation and effect but no actual movement.
+--
+-- `FlickerStep` is the game's own marker for that window: set at the start of
+-- the dash, cleared with SetAttribute(..., nil) at the end (client 12189),
+-- after which the game restores the speed itself. It is also exactly the
+-- guard the game puts at the top of its own setRunSpeed (client 2400-2404),
+-- so deferring to it is the same rule the client already follows rather than
+-- a workaround.
+--
+-- Covers every dash variant that touches WalkSpeed - Flicker Step, Shisui
+-- Flicker and the Isobu Cloak swim dash all set it. Lightning Dodge does not
+-- set a speed at all, so there is nothing to yield to there.
+---------------------------------------------------------------------
+function _0xa299._0xDashActive()
+    local active = false
+    pcall(function()
+        local char = _0xa299._0x396d.Character
+        if char and char:GetAttribute("FlickerStep") then active = true end
+    end)
+    return active
+end
+
+---------------------------------------------------------------------
 -- WALKSPEED SYSTEM
 ---------------------------------------------------------------------
 _0xa299._0x5c19 = {
@@ -3283,7 +3314,20 @@ _0xa299._0x5c19 = {
 
 function _0xa299._0x0ff2()
     if not _0xa299._0x5c19.enabled then return end
-    
+
+    -- Same dash handover Auto Run and Omnimovement make: a flicker dash sets
+    -- 80-150 and the game puts the speed back itself, so a per-frame write
+    -- here would cancel the dash outright.
+    --
+    -- This slider reaches 200, so yielding CAN mean briefly moving slower
+    -- than the setting for the 0.4-0.5 s the dash lasts. Worth it: the
+    -- alternative is the dash not working at all. It also keeps us off a high
+    -- WalkSpeed during the dash window, and the client self-reports
+    -- `BanMe "Offense 1C"` at WalkSpeed >= 110 (client 22251) - swallowed by
+    -- the namecall blocker near the top of this file, but no reason to lean
+    -- on that more than necessary. See _0xa299._0xDashActive.
+    if _0xa299._0xDashActive() then return end
+
     pcall(function()
         local char = _0xa299._0x396d.Character
         if not char then return end
@@ -3888,7 +3932,14 @@ _0xa299._0x4b83:AddToggle("Auto Run", false, function(Value)
                 
                 local animator = humanoid:FindFirstChildOfClass("Animator")
                 if not animator then return end
-                
+
+                -- Mid-dash: hands off entirely. The dash owns WalkSpeed and
+                -- its own animation for 0.4-0.5 s, and the game restores the
+                -- speed when it clears FlickerStep. Returning rather than
+                -- just skipping the speed write also leaves the dash
+                -- animation alone. See _0xa299._0xDashActive.
+                if _0xa299._0xDashActive() then return end
+
                 -- If W is held, constantly enforce walkspeed 28 and run animation
                 if _0xa299._0x7c3aWHeld then
                     -- Always enforce walkspeed 28 while holding W
@@ -4056,6 +4107,16 @@ function _0xa299._0xBRUNStart()
             if not char then return end
             local humanoid = char:FindFirstChildOfClass("Humanoid")
             if not humanoid or humanoid.Health <= 0 then return end
+
+            -- Mid-dash: hands off entirely, before the MoveDirection test.
+            --
+            -- Deliberately NOT folded into _0xBRUNBlocked: that path stops
+            -- the run track and clears Backpack.running, which would fight
+            -- the dash's own animation and state. A dash is a handover, not a
+            -- state we are locked out of, so the correct response is to touch
+            -- nothing and let the game put the speed back when it clears
+            -- FlickerStep. See _0xa299._0xDashActive.
+            if _0xa299._0xDashActive() then return end
 
             local moving = humanoid.MoveDirection.Magnitude > 0.1
 
@@ -28230,13 +28291,75 @@ _0xa299._0xProgBuild = {
     useIronline  = false,
     geninExam    = false,
     autoWeapon   = false,
+    farmRyo      = false,   -- run the Ryo farm through the dead time before an age up
     wipeAge      = 25,
-    paths        = { Taijutsu = true, Sealing = true, Stamina = true, Genjutsu = true },
+    -- Greatsword starts OFF - it blocks Taijutsu, so it has to be chosen.
+    paths        = { Taijutsu = true, Sealing = true, Stamina = true, Genjutsu = true,
+                     Greatsword = false },
     wiped        = false,   -- set ONLY once a wipe is confirmed by the age dropping
     wipeAt       = 0,       -- cooldown so a failed wipe retries instead of dying
     examTried    = false,   -- cleared on age up
     lastTreeRun  = 0,
 }
+
+---------------------------------------------------------------------
+-- FARM RYO THROUGH THE DEAD TIME
+--
+-- Once the quests for an age are done the run just sits at the safespot until
+-- the age ticks over, which is most of the cycle. The existing Auto Farm Ryo
+-- (the crop/orange farm, _0xa299._0x5d7f) fills that window, and Ryo is what
+-- the whole build pass is short of: a chakra point costs 100 and the Greatsword
+-- path alone wants 430.
+--
+-- Two rules this has to respect:
+--
+--  1. OWNERSHIP. If the user already had the Auto Farm Ryo toggle on, this
+--     leaves it completely alone - starting it would be redundant and stopping
+--     it later would be us switching off a feature they chose. We only ever
+--     stop a farm we started, which is what _0xProgRyoOwned tracks.
+--  2. ONE THING DRIVES THE CHARACTER AT A TIME. The farm moves us between
+--     crops and trees; Auto Prog pins us to the safespot and, with Spoof
+--     Loading In on, ANCHORS us there. Those cannot both run, so every piece of
+--     Auto Prog that needs the body - breaking a point, the tree pass, a
+--     weapon run, a deferred quest, the wipe, hiding - stops the farm first,
+--     and the wait loop restarts it at the end of the pass once nothing else
+--     wants it.
+---------------------------------------------------------------------
+_0xa299._0xProgRyoOwned = false
+
+-- Is a farm that WE started currently running? Used to hold back the safespot
+-- pin and the spoof anchor, so a farm the user turned on themselves still
+-- behaves exactly as it did before.
+function _0xa299._0xProgRyoRunning()
+    return _0xa299._0xProgRyoOwned and _0xa299._0x5d7f.enabled == true
+end
+
+function _0xa299._0xProgRyoStart()
+    if not _0xa299._0xProgBuild.farmRyo then return false end
+    if _0xa299._0x5d7f.enabled then
+        -- Already going. Either ours, or the user's and not ours to touch.
+        return _0xa299._0xProgRyoOwned
+    end
+    -- Do not start a farm into a threat; the hide happens a moment later.
+    if not _0xa299._0xAutoProgCheckSafety() then return false end
+
+    _0xa299._0xProgRyoOwned = true
+    _0xa299._0x5d7f.enabled = true
+    if not _0xa299._0xa6f6.noFallDamage then
+        _0xa299._0xa6f6.noFallDamage = true
+    end
+    _0xa299._0xAutoProgDebug("RYO_FARM", "farming through the age wait")
+    pcall(_0xa299._0xb795)
+    return true
+end
+
+-- Safe to call at any time; does nothing unless we are the ones farming.
+function _0xa299._0xProgRyoStop()
+    if not _0xa299._0xProgRyoOwned then return end
+    _0xa299._0xProgRyoOwned = false
+    pcall(_0xa299._0x7b65)
+    _0xa299._0xAutoProgDebug("RYO_FARM", "stopped")
+end
 
 ---------------------------------------------------------------------
 -- THE FOUR PATHS
@@ -28305,12 +28428,39 @@ _0xa299._0xSkillPaths = {
         "Substitution",
         "Weighted Kick", "Leaf Whirlwind", "Dynamic Entry", "Lion's Barrage",
     },
+    -- GREATSWORD / HEAVY. Read straight out of GameManager's skill table, so
+    -- the order is the real dependency order: Aerial Heavy Attack needs
+    -- Substitution, Triple Jump needs that, and so on up to Cleave Rush.
+    -- 430 Ryo end to end, by far the longest of the five.
+    --
+    -- "Increased Infusion Time" is deliberately NOT in here even though it
+    -- sits at the same place in the tree as Gold Infusions. The two BLOCK each
+    -- other, and Chip Damage past them is SkillRequirementType = "One", so it
+    -- only needs one of the pair. Listing both would unlock Gold Infusions,
+    -- then jam forever on an Increased Infusion Time that can never be bought.
+    Greatsword = {
+        "Substitution",
+        "Aerial Heavy Attack", "Triple Jump", "Gold Infusions", "Chip Damage",
+        "Greatsword Training", "Hyper Roar", "Cleave Rush",
+    },
 }
+
+-- Paths that cannot coexist, because the game blocks them against each other.
+-- Greatsword Training lists Weighted Kick in its BlockedSkills and Weighted
+-- Kick returns the favour, so picking both means one path is refused on every
+-- single pass forever. The Greatsword pick wins - it is the deliberate one.
+_0xa299._0xSkillPathConflict = {
+    Greatsword = "Taijutsu",
+}
+_0xa299._0xProgConflictTold = false
 
 -- Order the paths are attempted in. Sealing and Stamina first because their
 -- early skills need only a Chakra Shard, so they make progress on a fresh
 -- life while the other two are still waiting on a scroll.
-_0xa299._0xSkillPathOrder = { "Sealing", "Stamina", "Genjutsu", "Taijutsu" }
+-- Walk order. Every selected path is attempted in the same sitting, so this
+-- only decides who gets to spend the Ryo first. Greatsword goes last because
+-- it is the most expensive and would otherwise starve the others.
+_0xa299._0xSkillPathOrder = { "Sealing", "Stamina", "Genjutsu", "Taijutsu", "Greatsword" }
 
 -- Do we already own it? UnlockedSkills is a flat array of names.
 function _0xa299._0xHasSkill(data, skillName)
@@ -28465,10 +28615,18 @@ _0xa299._0xSkillItemGate = {
     ["Core Strength"]      = { "Parkour Scroll" },
     ["Weighted Kick"]      = { "Chakra Shard", "Combat Scroll" },
     ["Feather Genjutsu"]   = { "Chakra Shard", "Kurenai's Blessing" },
+    -- Greatsword path. Greatsword Training wants the same pair Weighted Kick
+    -- does, which is the other half of why the two paths are exclusive.
+    ["Greatsword Training"] = { "Chakra Shard", "Combat Scroll" },
+    ["Hyper Roar"]         = { "Chakra Fragments" },
+    ["Cleave Rush"]        = { "Chakra Fragments" },
 }
 
--- Item -> the Auto Prog quest that rewards it. Chakra Shard and Sealing Bells
--- are absent deliberately: neither comes from a quest.
+-- Item -> the Auto Prog quest that rewards it. Chakra Shard, Sealing Bells and
+-- Chakra Fragments are absent deliberately. The first two do not come from a
+-- quest at all; fragments come from several the run may already be doing
+-- (Bandit Camp +1, Corrupted Point +1, a boss +1, Capture Manda +2), so
+-- forcing one particular quest here would run something the user did not pick.
 _0xa299._0xItemQuest = {
     ["Parkour Scroll"]     = "Parkour Training",
     ["Combat Scroll"]      = "Combat Instructor",
@@ -28620,6 +28778,22 @@ function _0xa299._0xProgAcquireFor(data, skillName)
                 continue
             end
 
+            -- Same story for fragments: they are mission rewards, so the fix is
+            -- which quests are selected, not a trip we can make. Bandit Camp,
+            -- Corrupted Point and any boss give 1, Capture Manda gives 2.
+            -- Cleave Rush wants THREE, so the message says so - the gate
+            -- itself only tests that we hold at least one, and the server
+            -- refusing the unlock is the thing that catches short counts.
+            if itemName == "Chakra Fragments" then
+                if _0xa299._0xProgItemReady(itemName) then
+                    _0xa299._0xProgItemRetry[itemName] = tick() + _0xa299._0xProgItemRetryGap
+                    _0xa299._0x8545:Notify("Auto Prog",
+                        skillName .. " needs Chakra Fragments (up to 3) - run Bandit Camp, "
+                        .. "Corrupted Point or a boss", 4, "info")
+                end
+                continue
+            end
+
             -- Still cooling down from a failed attempt: skip to the next gate
             -- or the next path rather than making the trip again.
             if not _0xa299._0xProgItemReady(itemName) then
@@ -28703,9 +28877,24 @@ function _0xa299._0xProgSkillTreePass()
     if type(data) ~= "table" then return end
 
     -- Anything left to do at all? Avoids a pointless sit-down.
+    -- Two paths that block each other would otherwise be refused on every
+    -- pass for the rest of the run, so one of them is dropped here.
+    local blocked = {}
+    for winner, loser in pairs(_0xa299._0xSkillPathConflict) do
+        if _0xa299._0xProgBuild.paths[winner] and _0xa299._0xProgBuild.paths[loser] then
+            blocked[loser] = true
+            if not _0xa299._0xProgConflictTold then
+                _0xa299._0xProgConflictTold = true
+                _0xa299._0x8545:Notify("Auto Prog",
+                    winner .. " and " .. loser .. " block each other in game - skipping "
+                    .. loser, 5, "warning")
+            end
+        end
+    end
+
     local wanted = {}
     for _, pathName in ipairs(_0xa299._0xSkillPathOrder) do
-        if _0xa299._0xProgBuild.paths[pathName] then
+        if _0xa299._0xProgBuild.paths[pathName] and not blocked[pathName] then
             local nextSkill = _0xa299._0xNextSkillOnPath(data, pathName)
             if nextSkill then wanted[#wanted + 1] = { pathName, nextSkill } end
         end
@@ -28718,6 +28907,9 @@ function _0xa299._0xProgSkillTreePass()
         point = point and point:GetChildren()[1] or nil
     end
     if not point then return end
+
+    -- About to sit at a chakra point, so stop farming first.
+    _0xa299._0xProgRyoStop()
 
     _0xa299._0x8545:Notify("Auto Prog", "Progressing skill trees", 2, "info")
 
@@ -28848,24 +29040,72 @@ _0xa299._0xProgWeaponPrice = {
     ["Golden Zabunagi"] = 70,
     ["Silver Kunai"] = 15,
     ["Golden Asumai"] = 40,
+    ["Silver Zabunagi"] = 50,
+    ["Onyx Zabunagi"] = 90,
 }
 
--- Cheapest in the order: below this nothing at all is affordable, so there is
--- no point making the trip. Was a hand-picked 35, which refused to buy at 20
--- Ryo even though a Silver Kunai costs 15.
-_0xa299._0xProgWeaponMinRyo = math.huge
-for _, _0xwn in ipairs(_0xa299._0xProgWeaponOrder) do
-    local _0xwp = _0xa299._0xProgWeaponPrice[_0xwn]
-    if _0xwp and _0xwp < _0xa299._0xProgWeaponMinRyo then
-        _0xa299._0xProgWeaponMinRyo = _0xwp
+-- GREATSWORD PATH: only a greatsword will do.
+--
+-- Every skill on that path past Greatsword Training has
+-- RequiresWeapon = { "Greatsword" }, so buying a kunai would unlock moves that
+-- cannot be used. All three Zabunagi are mechanically the SAME weapon - same
+-- BaseName, same CombatType, and no damage or stat fields separating them in
+-- GameManager - so the tiers are cosmetic and this goes CHEAPEST first. The
+-- path costs 430 Ryo in skills; saving 40 on the sword is worth more than a
+-- nicer looking one.
+--
+-- Onyx is last for a second reason: it carries
+-- Condition = { SkillOwned, Greatsword Training }, so it is refused until that
+-- skill is in, and the fallback walks past it without any special case.
+_0xa299._0xProgGreatswordOrder = { "Silver Zabunagi", "Golden Zabunagi", "Onyx Zabunagi" }
+
+-- Which list applies, and the two Ryo figures that come off it.
+-- Returns: list, cheapest price, first pick's price, is this the greatsword run.
+function _0xa299._0xProgWeaponPlan()
+    local greatsword = _0xa299._0xProgBuild.skillTree
+        and _0xa299._0xProgBuild.paths
+        and _0xa299._0xProgBuild.paths.Greatsword
+        and true or false
+
+    local list = greatsword and _0xa299._0xProgGreatswordOrder or _0xa299._0xProgWeaponOrder
+
+    local cheapest = math.huge
+    for _, name in ipairs(list) do
+        local price = _0xa299._0xProgWeaponPrice[name]
+        if price and price < cheapest then cheapest = price end
     end
+    if cheapest == math.huge then cheapest = 15 end
+
+    return list, cheapest, (_0xa299._0xProgWeaponPrice[list[1]] or cheapest), greatsword
 end
-if _0xa299._0xProgWeaponMinRyo == math.huge then _0xa299._0xProgWeaponMinRyo = 15 end
 
--- Price of the FIRST choice - what we actually want. Used by the quest
--- ordering, not by the buy: short of this, the run puts the Ryo quests first.
-_0xa299._0xProgWeaponWant = _0xa299._0xProgWeaponPrice[_0xa299._0xProgWeaponOrder[1]] or 70
+-- Bind it, so a death does not take it with it - every Zabunagi is
+-- LostOnDeath. Same two calls as the Bind Weapon button.
+function _0xa299._0xProgBindWeapon()
+    local ok = pcall(function()
+        local ev = _0xa299._0xe08d:WaitForChild("Events")
+        ev:WaitForChild("DataFunction"):InvokeServer("GetWeapon")
+        ev:WaitForChild("DataEvent"):FireServer("WeaponBind")
+    end)
+    if ok then
+        _0xa299._0x8545:Notify("Auto Prog", "Weapon bound", 3, "check")
+    else
+        _0xa299._0x8545:Notify("Auto Prog", "Could not bind the weapon", 3, "warning")
+    end
+    return ok
+end
 
+-- The two thresholds come out of _0xProgWeaponPlan now, because they depend on
+-- which list is in play - the greatsword run bottoms out at 50, the default one
+-- at 15. The old versions were computed once at load off the default order,
+-- which would have told the greatsword run it could afford a sword at 15 Ryo.
+--
+-- Both are BASE prices. What the server actually charges is
+-- getModifiedPrice(base, relationship, economy, "Buy"), which ranges from 0.8x
+-- in your own booming village to 2x at one you are at war with - so these are a
+-- guide, not a guarantee. Pay is fired with a price of 0 and the server works
+-- out the real figure, so the only cost of being wrong is a wasted trip that
+-- the fallback order absorbs.
 _0xa299._0xProgWeaponRetry = 120   -- after a real attempt that bought nothing
 _0xa299._0xProgWeaponAt = 0
 
@@ -28896,12 +29136,14 @@ function _0xa299._0xProgNeedsRyoForWeapon()
     if type(data) ~= "table" then return false end
     if not _0xa299._0xProgUnarmed(data) then return false end
 
+    local list, _, want = _0xa299._0xProgWeaponPlan()
+
     -- Owning one unequipped is not a money problem - the buy equips it.
-    for _, name in ipairs(_0xa299._0xProgWeaponOrder) do
+    for _, name in ipairs(list) do
         if _0xa299._0xCountItem(data, name) > 0 then return false end
     end
 
-    return (tonumber(data.Ryo) or 0) < _0xa299._0xProgWeaponWant
+    return (tonumber(data.Ryo) or 0) < want
 end
 
 ---------------------------------------------------------------------
@@ -28943,6 +29185,38 @@ function _0xa299._0xProgQuestOrder()
     return first
 end
 
+---------------------------------------------------------------------
+-- WHERE THE SHOP IS
+--
+-- The vendor part is "TorchMesh", the same one the Purchase Item button uses -
+-- NOT "The Blacksmith". That was the bug, and it was never going to work: the
+-- Blacksmith's dialog has exactly two options, a ring upgrade and Quit, with no
+-- Item field anywhere in it, so it does not sell a thing. TorchMesh is the
+-- stall that actually stocks weapons, and firing Pay against it with a price of
+-- 0 is proven to work by hand with these exact item names.
+--
+-- _0xNearestNamed only sees top-level workspace children, so the stall has to
+-- be streamed in to be found at all, and Pay's proximity check is on the
+-- server, so we have to be standing at it. Rather than hardcode five village
+-- positions, the stall's position is remembered the first time a run walks
+-- past one - the quests tour the village anyway - and the buy travels back to
+-- it from then on. Keyed by village, because every village has its own copy
+-- and a remembered position from somewhere else would be useless.
+---------------------------------------------------------------------
+_0xa299._0xProgShopPos = {}
+
+-- Called from the buy's own poll, so this runs every few seconds while Auto
+-- Prog is on. Costs one pass over workspace's children.
+function _0xa299._0xProgNoteShop(data)
+    local village = type(data) == "table" and tostring(data.Village or "") or ""
+    if village == "" then return end
+
+    local part = _0xa299._0xNearestNamed("TorchMesh")
+    if part then
+        _0xa299._0xProgShopPos[village] = part.CFrame
+    end
+end
+
 function _0xa299._0xProgBuyWeapon()
     -- Cheap gate first. The expensive one only applies to a real attempt.
     if (tick() - _0xa299._0xProgWeaponPoll) < _0xa299._0xProgWeaponPollGap then return false end
@@ -28957,29 +29231,39 @@ function _0xa299._0xProgBuyWeapon()
         end)
     end
     if type(data) ~= "table" then return false end
+
+    -- Learn the stall's position whenever one happens to be in range, which is
+    -- most useful during the broke stretch - by the time there is Ryo to spend
+    -- the trip is already known.
+    pcall(_0xa299._0xProgNoteShop, data)
+
     if not _0xa299._0xProgUnarmed(data) then return false end
 
-    -- Don't make the trip broke. Below this there is no point travelling to
-    -- the Blacksmith just to be refused three times, and the retry would burn
-    -- the 2 minute cooldown doing nothing.
+    -- Don't make the trip broke. Below this nothing in the order is
+    -- affordable, so there is no point travelling to the stall just to be
+    -- refused three times.
+    local list, cheapest, _, greatsword = _0xa299._0xProgWeaponPlan()
+
     local ryo = tonumber(data.Ryo) or 0
-    if ryo < _0xa299._0xProgWeaponMinRyo then
+    if ryo < cheapest then
         -- Broke. NOT an attempt, so the 2 minute cooldown stays untouched and
         -- the short poll brings us straight back the moment a quest pays out.
         return false
     end
 
-    -- From here it is a real attempt: travel to the shop and fire Pay.
-    _0xa299._0xProgWeaponAt = tick()
-
     -- Already own one of them but just have it unequipped? Equip rather than
-    -- buy a second.
-    for _, name in ipairs(_0xa299._0xProgWeaponOrder) do
+    -- buy a second - and bind it, since an unbound one we bought earlier would
+    -- otherwise still be lost on the next death.
+    for _, name in ipairs(list) do
         if _0xa299._0xCountItem(data, name) > 0 then
             pcall(function()
                 _0xa299._0xe08d.Events.DataEvent:FireServer("Item", "Selected", name)
             end)
             _0xa299._0x8545:Notify("Auto Prog", "Equipped " .. name, 3, "check")
+            if greatsword then
+                task.wait(0.3)
+                pcall(_0xa299._0xProgBindWeapon)
+            end
             return true
         end
     end
@@ -28989,22 +29273,51 @@ function _0xa299._0xProgBuyWeapon()
         and _0xa299._0x396d.Character:FindFirstChild("HumanoidRootPart")
     if hrp then startpos = hrp.CFrame end
 
-    local vendor = _0xa299._0xDialogPart("The Blacksmith")
+    -- Already standing in range of one? Then there is nothing to travel to.
+    local vendor = _0xa299._0xNearestNamed("TorchMesh")
+
+    -- Otherwise go to where we last saw this village's stall. Travel first,
+    -- THEN look again - the lookup only sees what is streamed, and the whole
+    -- point of the trip is to stream it.
     if not vendor then
-        _0xa299._0x8545:Notify("Auto Prog", "Blacksmith not found", 3, "warning")
+        local known = _0xa299._0xProgShopPos[tostring(data.Village or "")]
+        if not known then
+            -- Never seen one. The quests tour the village, so one will come
+            -- into range soon enough; no notify, this is not an error.
+            _0xa299._0xAutoProgDebug("NO_SHOP", "TorchMesh not seen yet")
+            return false
+        end
+        _0xa299._0xProgRyoStop()
+        -- Travelling IS the expensive part, so the 2 minute cooldown starts
+        -- here rather than at the top of the function. Everything above this
+        -- line is a cheap look that is allowed to come straight back - burning
+        -- the cooldown on "broke" or "stall not seen yet" is what made this
+        -- feature sit idle for minutes at a time.
+        _0xa299._0xProgWeaponAt = tick()
+        _0xa299._0xSTP(CFrame.new(known.Position + Vector3.new(0, 3, 0)))
+        task.wait(0.5)
+        vendor = _0xa299._0xDialogPart("TorchMesh")
+    end
+
+    if not vendor then
+        _0xa299._0x8545:Notify("Auto Prog", "Weapon stall not loaded - retrying", 3, "warning")
         return false
     end
 
-    -- Stand at the shop. The proximity check is on the server, so being near
-    -- the part we pass is the whole point.
+    -- Stand ON it. Pay's proximity check is server side, so being near the
+    -- part we pass is the whole point.
     local vpos = _0xa299._0xInstancePos(vendor)
     if vpos and hrp then
         _0xa299._0xSTP(CFrame.new(vpos + Vector3.new(0, 3, 0)))
         task.wait(0.4)
     end
 
+    -- Standing at one already: still an attempt, so start the cooldown.
+    _0xa299._0xProgRyoStop()
+    _0xa299._0xProgWeaponAt = tick()
+
     local bought = nil
-    for _, name in ipairs(_0xa299._0xProgWeaponOrder) do
+    for _, name in ipairs(list) do
         if not _0xa299._0xAutoProg.enabled then break end
 
         local before = _0xa299._0xCountItem(_0xa299._0xLocalData(), name)
@@ -29031,6 +29344,14 @@ function _0xa299._0xProgBuyWeapon()
             _0xa299._0xe08d.Events.DataEvent:FireServer("Item", "Selected", bought)
         end)
         _0xa299._0x8545:Notify("Auto Prog", "Bought and equipped " .. bought, 4, "check")
+
+        -- Bind it. Every Zabunagi is LostOnDeath, and the greatsword path is a
+        -- 430 Ryo investment in moves that do nothing without one in hand, so
+        -- losing the sword is the one thing that undoes the whole run.
+        if greatsword then
+            task.wait(0.4)
+            pcall(_0xa299._0xProgBindWeapon)
+        end
     else
         _0xa299._0x8545:Notify("Auto Prog",
             "No weapon affordable - retrying in 2m", 3, "warning")
@@ -29102,6 +29423,7 @@ function _0xa299._0xProgWipe()
     -- purely CLIENT-side bookkeeping for the chakra point UI; the server never
     -- sees it, and GameManager is not reachable here without a gc scan, which
     -- would make this Volt-only.
+    _0xa299._0xProgRyoStop()
     pcall(function() DE:FireServer("NewGame") end)
     task.wait(0.16)
     pcall(function() DF:InvokeServer("RequestReincarnation", "Male") end)
@@ -29410,6 +29732,9 @@ function _0xa299._0xAutoProgWaitForSafety(runId)
     local safe, reason = _0xa299._0xAutoProgCheckSafety()
     if not safe then
         _0xa299._0xAutoProgDebug("WAITING_SAFETY", reason)
+        -- Hiding beats farming. Stop first, or the farm keeps dragging us back
+        -- out to the crops while we are supposed to be out of sight.
+        _0xa299._0xProgRyoStop()
         -- Going into hiding: give animations back to the game and put the
         -- weapon away, the way the boss farm does.
         _0xa299._0xAutoProgRestoreAnim()
@@ -29818,7 +30143,10 @@ function _0xa299._0xAutoProgCheckAndBreakPoints(runId)
     end
     
     _0xa299._0xAutoProg.alreadyBrokePoint = true
-    
+
+    -- Committed to a trip now, so the Ryo farm has to let go of the body.
+    _0xa299._0xProgRyoStop()
+
     _0xa299._0x8545:Notify("Auto Prog", "Have Enough Ryo, breaking chakra point", 2, "info")
     
     local pointIndex = _0xa299._0xAutoProg.currentPointIndex
@@ -30119,17 +30447,35 @@ function _0xa299._0xStartAutoProg()
             end
             
             while _0xa299._0xAutoProgAlive(myRun) and not ageChanged do
-                if _0xa299._0x396d.Character and _0xa299._0x396d.Character:FindFirstChild("HumanoidRootPart") then
-                    _0xa299._0x396d.Character.HumanoidRootPart.CFrame = _0xa299._0xdde4()
+                -- A threat arriving mid-farm drops the farm FIRST, so the pin
+                -- below puts us back at the safespot in the same pass instead
+                -- of a second later.
+                if _0xa299._0xProgRyoRunning() and not _0xa299._0xAutoProgCheckSafety() then
+                    _0xa299._0xProgRyoStop()
                 end
-                
-                if _0xa299._0x220a.spoofLoadingIn then
-                    _0xa299._0x220a.applySpoofProtection()
+
+                -- Hold back the pin and the anchor while the Ryo farm has the
+                -- body. Pinning here would teleport it off the crop it is
+                -- standing on every second, and the spoof anchor would stop it
+                -- moving at all.
+                if not _0xa299._0xProgRyoRunning() then
+                    if _0xa299._0x396d.Character and _0xa299._0x396d.Character:FindFirstChild("HumanoidRootPart") then
+                        _0xa299._0x396d.Character.HumanoidRootPart.CFrame = _0xa299._0xdde4()
+                    end
+
+                    if _0xa299._0x220a.spoofLoadingIn then
+                        _0xa299._0x220a.applySpoofProtection()
+                    end
                 end
                 
                 local ryo = _0xa299._0xAutoProgGetRyo()
                 local newAge = _0xa299._0xGetPlayerAge()
-                _0xa299._0xAutoProgUpdateGUI("autoprog_waiting_age", tostring(newAge) .. " | Ryo: " .. tostring(ryo))
+                -- Say when it is farming rather than just sitting, or the
+                -- status reads "Waiting for Age Up" the whole time and there is
+                -- no way to tell the toggle is doing anything.
+                _0xa299._0xAutoProgUpdateGUI("autoprog_waiting_age",
+                    tostring(newAge) .. " | Ryo: " .. tostring(ryo)
+                    .. (_0xa299._0xProgRyoRunning() and " | Farming" or ""))
                 
                 if ryo >= 100 and #_0xa299._0xAutoProg.selectedPoints > 0 then
                     if _0xa299._0x220a.spoofLoadingIn then
@@ -30196,6 +30542,7 @@ function _0xa299._0xStartAutoProg()
                 if #_0xa299._0xAutoProg.deferredQuests > 0
                    and (tick() - _0xa299._0xAutoProg.lastDeferredRetry) >= _0xa299._0xAutoProgRetryEvery then
                     _0xa299._0xAutoProg.lastDeferredRetry = tick()
+                    _0xa299._0xProgRyoStop()
                     _0xa299._0xAutoProgDebug("RETRY_DEFERRED",
                         table.concat(_0xa299._0xAutoProg.deferredQuests, ", "))
 
@@ -30281,9 +30628,18 @@ function _0xa299._0xStartAutoProg()
                     _0xa299._0xAutoProg.currentAge = newAge
                     task.wait(2)
                 end
-                
+
+                -- Everything that wanted the body has had it. Whatever is left
+                -- of this age goes into farming Ryo. No-ops when the toggle is
+                -- off, when a farm is already running, or when it is not safe.
+                _0xa299._0xProgRyoStart()
+
                 task.wait(1)
             end
+
+            -- Age ticked over, or the life ended. Either way the next pass has
+            -- quests to run, so hand the body back.
+            _0xa299._0xProgRyoStop()
             
             if _0xa299._0x220a.spoofLoadingIn then
                 _0xa299._0x220a.removeSpoofProtection()
@@ -30336,6 +30692,9 @@ function _0xa299._0xStopAutoProg()
         _0xa299._0xAutoProg.originalNoFallDamage = nil
     end
     
+    -- Any farm WE started goes with us; one the user turned on stays.
+    _0xa299._0xProgRyoStop()
+
     _0xa299._0xAutoProg.isPanicking = false
     _0xa299._0xAutoProg.lastDebugState = ""
     _0xa299._0xAutoProg.lastDebugReason = ""
@@ -30378,19 +30737,38 @@ do
         _0xa299._0xProgBuild.skillTree = Value
     end, {Flag = "ProgSkillTree", Type = "info", Text = "Unlocks your skill paths while waiting to age up"})
 
-    g:AddMultiDropdown("Skill Paths", {"Taijutsu", "Sealing", "Stamina", "Genjutsu"},
+    -- Greatsword is off by default: it is the alternative to Taijutsu, not an
+    -- addition to it, so turning it on has to be a choice.
+    g:AddMultiDropdown("Skill Paths", {"Taijutsu", "Greatsword", "Sealing", "Stamina", "Genjutsu"},
         {"Taijutsu", "Sealing", "Stamina", "Genjutsu"}, function(Values)
         local picked = {}
         for _, name in ipairs(Values) do picked[name] = true end
         _0xa299._0xProgBuild.paths = picked
+        -- Let the warning speak again if the selection changes.
+        _0xa299._0xProgConflictTold = false
+        -- The weapon list changes with the path, so an in-flight cooldown from
+        -- the old list should not hold the new one up.
+        _0xa299._0xProgWeaponAt = 0
     end)
+
+    -- AddMultiDropdown takes no tooltip argument, so the warning goes here.
+    g:AddLabel("Greatsword replaces Taijutsu - the game blocks both")
+
+    g:AddDivider()
+
+    g:AddToggle("Farm Ryo While Waiting", false, function(Value)
+        _0xa299._0xProgBuild.farmRyo = Value
+        -- Turning it off should stop a farm we started straight away rather
+        -- than at the end of the age.
+        if not Value then _0xa299._0xProgRyoStop() end
+    end, {Flag = "ProgFarmRyo", Type = "info", Text = "Farms Ryo in the dead time before each age up"})
 
     g:AddDivider()
 
     g:AddToggle("Auto Buy Weapon", false, function(Value)
         _0xa299._0xProgBuild.autoWeapon = Value
         if Value then _0xa299._0xProgWeaponAt = 0 end
-    end, {Flag = "ProgAutoWeapon", Type = "info", Text = "Buys you a weapon if you have none"})
+    end, {Flag = "ProgAutoWeapon", Type = "info", Text = "Buys you a weapon if you have none, and binds a greatsword"})
 
     g:AddDivider()
 
