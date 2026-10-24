@@ -32327,6 +32327,24 @@ _0xa299._0xGaaraCoffinHold = 4.5
 _0xa299._0xGaaraSuspOffset = 30
 _0xa299._0xGaaraSuspHold = 3
 
+-- COFFIN / SUSPENSION: answer them by teleporting to the four far spots
+-- instead of climbing to an offset.
+--
+-- Both are good candidates for it. The coffin is a homing projectile that
+-- re-aims every frame and whose real vertical reach turned out to be larger
+-- than its hitbox suggested (see _0xGaaraCoffinOffset), and suspension is a
+-- ground effect we only learn about from a remote with no instance to track.
+-- Leaving the area outright sidesteps both problems, where an offset is a bet
+-- on a number.
+--
+-- Costs nothing extra in damage: at the 38/30 offsets we are already out of
+-- melee reach, so neither path lands hits during the window.
+_0xa299._0xGaaraCoffinSuspRoam = false
+-- Grace on the teleport-dodge window, refreshed each frame the move is live.
+-- Must exceed one hop (_0xGaaraV2Step, 0.3 s) or the cycle would end between
+-- hops while the move was still up.
+_0xa299._0xGaaraTeleDodgeHold = 0.5
+
 _0xa299._0xGaaraRoamEvery = 10    -- seconds between hops
 _0xa299._0xGaaraRoamHold  = 1     -- seconds spent at the spot
 _0xa299._0xGaaraStormClear = 10   -- keep this far from any sandstorm
@@ -32359,6 +32377,10 @@ _0xa299._0xGaaraState = {
     -- state survives a frame where the storm instance blinks, and so it clears
     -- itself if the dodge stops running at all (farm off, boss switched).
     stormBlockUntil = 0,
+    -- Same idea for the moves we answer by teleporting to the far spots
+    -- instead of climbing (coffin, suspension). Refreshed every frame their
+    -- window is live; see _0xGaaraCoffinSuspRoam.
+    teleDodgeUntil = 0,
     animBoss = nil,       -- boss model whose Animator we hooked
     animConn = nil,
     -- Every live sandstorm, not just the most recent one. The single `storm`
@@ -32653,9 +32675,11 @@ function _0xa299._0xGaaraDisarm()
     S.shieldUntil = 0
     S.coffinUntil = 0
     S.suspUntil = 0
-    -- Must be cleared with the rest: it gates the M1 and dash loops, so a
-    -- stale deadline would leave a restarted farm standing still.
+    -- Must be cleared with the rest: these gate the block assert and the
+    -- teleport dodge, so a stale deadline would have a restarted farm either
+    -- blocking or sitting out on a spot for no reason.
     S.stormBlockUntil = 0
+    S.teleDodgeUntil = 0
     S.animBoss = nil
     S.animConn = nil
     S.storms = {}
@@ -32737,16 +32761,28 @@ function _0xa299._0xGaaraDodge(bossHrp)
 
     -- Sand Coffin: cannot climb (see the note above), so this only has to
     -- clear the top of its hitbox.
+    --
+    -- Or, with _0xGaaraCoffinSuspRoam on, leave the area entirely instead of
+    -- climbing - the teleport dodge. Both this and suspension below set the
+    -- same window, so one hop cycle covers either or both.
     if S.coffin and not S.coffin.Parent then
         S.coffin = nil
     end
     if S.coffin or now < S.coffinUntil then
-        want(_0xa299._0xGaaraCoffinOffset)
+        if _0xa299._0xGaaraCoffinSuspRoam then
+            S.teleDodgeUntil = now + _0xa299._0xGaaraTeleDodgeHold
+        else
+            want(_0xa299._0xGaaraCoffinOffset)
+        end
     end
 
     -- Sand Suspension: no instance to track, purely the circleWarning timer.
     if now < S.suspUntil then
-        want(_0xa299._0xGaaraSuspOffset)
+        if _0xa299._0xGaaraCoffinSuspRoam then
+            S.teleDodgeUntil = now + _0xa299._0xGaaraTeleDodgeHold
+        else
+            want(_0xa299._0xGaaraSuspOffset)
+        end
     end
 
     -- Storm: while it exists near the boss.
@@ -32918,13 +32954,13 @@ function _0xa299._0xGaaraRoamPick(bossHrp)
     end
     return best
 end
----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
--- FOUR-SPOT ROAM - TIMED AND COCOON MODES (both experimental)
+---------------------------------------------------------------------
+-- FOUR-SPOT ROAM - TIMED AND HOLD MODES (all experimental)
 --
--- Three anti-despawn roams now exist, each with its own toggle so they can
--- be tried against each other. Precedence when more than one is on:
+-- Four things can move us off the hover, each independently toggled so they
+-- can be tried against each other. Precedence when more than one applies:
 --
---   cocoon  >  timed four-spot  >  V1 ten-spot
+--   hold (cocoon, teleport dodge)  >  timed four-spot  >  V1 ten-spot
 --
 -- 1. V1 (_0xGaaraRoamV1, _0xGaaraRoamTick below): every 10s drop onto ONE
 --    of ten arena spots, hold it 1s with the position re-pinned every
@@ -32933,8 +32969,15 @@ end
 -- 2. Timed four-spot (_0xGaaraRoamV2): every 10s, hop the four spots every
 --    0.3s for 2.5s, unpinned.
 --
--- 3. Cocoon four-spot (_0xGaaraCocoonRoam): the same hop, but only while
---    the sand cocoon is up, for exactly as long as it is up.
+-- 3. Cocoon (_0xGaaraCocoonRoam): the same hop, while the sand cocoon is up.
+--
+-- 4. Teleport dodge (_0xGaaraCoffinSuspRoam): the same hop, while a Sand
+--    Coffin or Sand Suspension window is live - replacing the 38/30 offsets
+--    those moves would otherwise use.
+--
+-- 3 and 4 share one cycle ("hold" mode) because they produce identical
+-- movement and differ only in what ends them; _0xGaaraRoamHoldUp is the
+-- union of their windows, so overlapping moves just extend it.
 --
 -- The four-spot modes write CFrame ONCE per hop and then leave the
 -- character alone - no re-pinning, no velocity reset. Between hops it
@@ -32944,10 +32987,9 @@ end
 -- next frame. Hence the `running` flag instead of V1's "return a CFrame
 -- for the farm to apply" shape.
 --
--- IMPORTANT difference between the two four-spot modes. The timed one
--- stands down for an active dodge; the cocoon one does NOT, because the
--- cocoon IS the active dodge. That asymmetry is deliberate - see the spot
--- list below for why it is safe in the cocoon case specifically.
+-- IMPORTANT asymmetry. The timed mode stands down for an active dodge; hold
+-- mode does NOT, because in hold mode the danger is what put us out there.
+-- See the spot list below for why that is safe.
 ---------------------------------------------------------------------
 _0xa299._0xGaaraRoamV1 = true       -- the ten-spot roam (the original)
 _0xa299._0xGaaraRoamV2 = false      -- four spots on a timer
@@ -32976,7 +33018,7 @@ _0xa299._0xGaaraV2Step  = 0.3       -- seconds between hops (both modes)
 _0xa299._0xGaaraV2Total = 2.5       -- timed mode: length of one cycle
 _0xa299._0xGaaraV2Every = 10        -- timed mode: seconds between starts
 
--- `mode` is "timed" or "cocoon", so the tick can tell whether a cycle
+-- `mode` is "timed" or "hold", so the tick can tell whether a cycle
 -- already in flight is the one the current conditions call for.
 _0xa299._0xGaaraV2 = { running = false, abort = false, nextAt = 0, mode = nil }
 
@@ -33041,6 +33083,28 @@ function _0xa299._0xGaaraCocoonUp()
     return (S.shield ~= nil) or (tick() < (S.shieldUntil or 0))
 end
 
+-- Are we inside a coffin/suspension window we have chosen to answer by
+-- teleporting? The toggle is re-read here as well as in the dodge, so turning
+-- it off ends a cycle on the next frame instead of at the end of the window.
+function _0xa299._0xGaaraTeleDodging()
+    local S = _0xa299._0xGaaraState
+    return _0xa299._0xGaaraCoffinSuspRoam
+        and S ~= nil
+        and tick() < (S.teleDodgeUntil or 0)
+end
+
+-- Does anything want us out on the four spots for as long as it lasts?
+--
+-- Both triggers produce identical movement and differ only in what ends them,
+-- so they share one cycle ("hold" mode) rather than competing for the
+-- character. A coffin landing during a cocoon simply extends the window.
+function _0xa299._0xGaaraRoamHoldUp()
+    if _0xa299._0xGaaraCocoonRoam and _0xa299._0xGaaraCocoonUp() then
+        return true
+    end
+    return _0xa299._0xGaaraTeleDodging()
+end
+
 -- One cycle of the four-spot hop. Runs as its own task so the Heartbeat is
 -- never blocked. `mode` decides what ends it: a 2.5s deadline, or the
 -- cocoon dropping.
@@ -33066,9 +33130,8 @@ function _0xa299._0xGaaraV2Run(mode)
 
         -- Each mode owns its own end condition AND its own toggle, so
         -- flipping either one off mid-cycle hands positioning straight back.
-        if mode == "cocoon" then
-            if not _0xa299._0xGaaraCocoonRoam then break end
-            if not _0xa299._0xGaaraCocoonUp() then break end
+        if mode == "hold" then
+            if not _0xa299._0xGaaraRoamHoldUp() then break end
         else
             if not _0xa299._0xGaaraRoamV2 then break end
             if deadline and tick() >= deadline then break end
@@ -33100,28 +33163,32 @@ end
 function _0xa299._0xGaaraV2Tick(dangerActive)
     local V = _0xa299._0xGaaraV2
 
-    -- COCOON MODE. Outranks the timed one: these spots were picked for this
-    -- window, and it is the only window where sitting outside his leash
-    -- costs nothing. Deliberately ignores dangerActive - the cocoon IS the
-    -- danger, and a spot 185+ studs out is strictly safer than the +38
-    -- hover the dodge would otherwise ask for.
-    if _0xa299._0xGaaraCocoonRoam and _0xa299._0xGaaraCocoonUp() then
+    -- HOLD MODE - the cocoon roam, and the coffin/suspension teleport dodge.
+    -- Outranks the timed one: these are the windows the far spots were picked
+    -- for, and the only ones where sitting outside his leash costs nothing we
+    -- were not already losing.
+    --
+    -- Deliberately ignores dangerActive, because in hold mode the danger IS
+    -- what put us here. A spot 185+ studs out clears every move he has (the
+    -- shield is radius 30, the coffin cannot climb, suspension is a ground
+    -- effect), so it is strictly safer than the offset it replaces - and that
+    -- also means a second move arriving mid-window needs no special handling.
+    if _0xa299._0xGaaraRoamHoldUp() then
         if V.running then
             -- A timed cycle caught mid-flight has to give way, but it owns
             -- the character until its own loop notices. Hold the farm off
             -- for this frame either way.
-            if V.mode ~= "cocoon" then V.abort = true end
+            if V.mode ~= "hold" then V.abort = true end
             return true
         end
         V.running = true
-        task.spawn(_0xa299._0xGaaraV2Run, "cocoon")
+        task.spawn(_0xa299._0xGaaraV2Run, "hold")
         return true
     end
 
-    -- A cocoon cycle that has outlived its cocoon: end it and give
-    -- positioning back, so the farm is on him for the first frame he is
-    -- hittable again.
-    if V.running and V.mode == "cocoon" then
+    -- A hold cycle whose window has closed: end it and give positioning back,
+    -- so the farm is on him for the first frame he is hittable again.
+    if V.running and V.mode == "hold" then
         V.abort = true
         return false
     end
@@ -36996,12 +37063,24 @@ _0xa299._0x1915.settings:AddToggle("Gaara Roam V2 (test)", false, function(Value
     _0xa299._0xGaaraV2.nextAt = 0
 end, {Flag = "GaaraRoamV2", Type = "warning", Text = "Cycles four spots every few seconds instead of one"})
 
+-- Both of these drive the same "hold" cycle, so each only aborts one if its
+-- own trigger was the last thing keeping the window open - hence re-checking
+-- _0xGaaraRoamHoldUp rather than aborting on sight.
 _0xa299._0x1915.settings:AddToggle("Gaara Cocoon Roam (test)", false, function(Value)
     _0xa299._0xGaaraCocoonRoam = Value
-    if not Value and _0xa299._0xGaaraV2.running and _0xa299._0xGaaraV2.mode == "cocoon" then
+    if not Value and _0xa299._0xGaaraV2.running and _0xa299._0xGaaraV2.mode == "hold"
+       and not _0xa299._0xGaaraRoamHoldUp() then
         _0xa299._0xGaaraV2.abort = true
     end
 end, {Flag = "GaaraCocoonRoam", Type = "warning", Text = "Moves around while Gaara is in his sand cocoon"})
+
+_0xa299._0x1915.settings:AddToggle("Gaara Teleport Dodge (test)", false, function(Value)
+    _0xa299._0xGaaraCoffinSuspRoam = Value
+    if not Value and _0xa299._0xGaaraV2.running and _0xa299._0xGaaraV2.mode == "hold"
+       and not _0xa299._0xGaaraRoamHoldUp() then
+        _0xa299._0xGaaraV2.abort = true
+    end
+end, {Flag = "GaaraTeleportDodge", Type = "warning", Text = "Dodges Sand Coffin and Sand Suspension by moving away instead of up"})
 
 -- TAILED BEASTS. All of this came over from the standalone Tailed Beast Farm
 -- when it was folded into the boss farm; the targeting and seal options get a
