@@ -28202,9 +28202,11 @@ _0xa299._0xProgBuild = {
     wipeAt25     = false,
     useIronline  = false,
     geninExam    = false,
+    autoWeapon   = false,
     wipeAge      = 25,
     paths        = { Taijutsu = true, Sealing = true, Stamina = true, Genjutsu = true },
-    wiped        = false,   -- one wipe per enable, so a failed wipe cannot loop
+    wiped        = false,   -- set ONLY once a wipe is confirmed by the age dropping
+    wipeAt       = 0,       -- cooldown so a failed wipe retries instead of dying
     examTried    = false,   -- cleared on age up
     lastTreeRun  = 0,
 }
@@ -28787,6 +28789,135 @@ function _0xa299._0xProgGeninExam()
     end
 end
 
+
+---------------------------------------------------------------------
+-- AUTO BUY A WEAPON
+--
+-- A rebuilt life starts unarmed, and most of what Auto Prog does wants a
+-- weapon - the boss farm equips one, and Taijutsu skills are useless without
+-- one. So if we are on Fist, buy one.
+--
+-- Preference order, falling through on failure:
+--     Golden Zabunagi  ->  Silver Kunai  ->  Golden Asumai
+--
+-- "Failure" is NOT the remote erroring. The purchase remote is
+--     InvokeServer("Pay", 0, itemName, qty, vendorPart)
+-- and it comes back without complaint whether or not you could afford it -
+-- which is why this counts the inventory before and after instead of trusting
+-- the call. Same reasoning as the existing Purchase Item button.
+--
+-- The LAST argument is the vendor part, and that is not decoration: it is how
+-- the server checks we are actually standing at the shop. So this resolves The
+-- Blacksmith through _0xDialogPart (nearest copy, streaming-aware - vendors
+-- exist once per village) and travels to it first. Firing without it would
+-- both fail the proximity check and look nothing like a real client.
+---------------------------------------------------------------------
+_0xa299._0xProgWeaponOrder = { "Golden Zabunagi", "Silver Kunai", "Golden Asumai" }
+_0xa299._0xProgWeaponRetry = 120   -- seconds before retrying after a failed buy
+_0xa299._0xProgWeaponMinRyo = 35   -- do not even travel below this
+_0xa299._0xProgWeaponAt = 0
+
+-- Unarmed? CurrentWeapon reads "Fist" with nothing equipped.
+function _0xa299._0xProgUnarmed(data)
+    if type(data) ~= "table" then return false end
+    local cw = tostring(data.CurrentWeapon or "")
+    return cw == "" or cw == "Fist" or cw == "nil"
+end
+
+function _0xa299._0xProgBuyWeapon()
+    if (tick() - _0xa299._0xProgWeaponAt) < _0xa299._0xProgWeaponRetry then return false end
+
+    local data = _0xa299._0xLocalData and _0xa299._0xLocalData() or nil
+    if type(data) ~= "table" then
+        pcall(function()
+            data = _0xa299._0xe08d.Events.DataFunction:InvokeServer("GetData")
+        end)
+    end
+    if type(data) ~= "table" then return false end
+    if not _0xa299._0xProgUnarmed(data) then return false end
+
+    -- Don't make the trip broke. Below this there is no point travelling to
+    -- the Blacksmith just to be refused three times, and the retry would burn
+    -- the 2 minute cooldown doing nothing.
+    local ryo = tonumber(data.Ryo) or 0
+    if ryo <= _0xa299._0xProgWeaponMinRyo then
+        _0xa299._0xProgWeaponAt = tick()
+        return false
+    end
+
+    _0xa299._0xProgWeaponAt = tick()
+
+    -- Already own one of them but just have it unequipped? Equip rather than
+    -- buy a second.
+    for _, name in ipairs(_0xa299._0xProgWeaponOrder) do
+        if _0xa299._0xCountItem(data, name) > 0 then
+            pcall(function()
+                _0xa299._0xe08d.Events.DataEvent:FireServer("Item", "Selected", name)
+            end)
+            _0xa299._0x8545:Notify("Auto Prog", "Equipped " .. name, 3, "check")
+            return true
+        end
+    end
+
+    local startpos = nil
+    local hrp = _0xa299._0x396d.Character
+        and _0xa299._0x396d.Character:FindFirstChild("HumanoidRootPart")
+    if hrp then startpos = hrp.CFrame end
+
+    local vendor = _0xa299._0xDialogPart("The Blacksmith")
+    if not vendor then
+        _0xa299._0x8545:Notify("Auto Prog", "Blacksmith not found", 3, "warning")
+        return false
+    end
+
+    -- Stand at the shop. The proximity check is on the server, so being near
+    -- the part we pass is the whole point.
+    local vpos = _0xa299._0xInstancePos(vendor)
+    if vpos and hrp then
+        _0xa299._0xSTP(CFrame.new(vpos + Vector3.new(0, 3, 0)))
+        task.wait(0.4)
+    end
+
+    local bought = nil
+    for _, name in ipairs(_0xa299._0xProgWeaponOrder) do
+        if not _0xa299._0xAutoProg.enabled then break end
+
+        local before = _0xa299._0xCountItem(_0xa299._0xLocalData(), name)
+
+        pcall(function()
+            _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataFunction")
+                :InvokeServer("Pay", 0, name, 1, vendor)
+        end)
+
+        -- Give the server a moment to replicate it before deciding.
+        local deadline = tick() + 2
+        repeat
+            task.wait(0.2)
+            local after = _0xa299._0xCountItem(_0xa299._0xLocalData(), name)
+            if after > before then bought = name; break end
+        until tick() > deadline
+
+        if bought then break end
+        _0xa299._0x8545:Notify("Auto Prog", "Could not buy " .. name .. ", trying next", 2, "info")
+    end
+
+    if bought then
+        pcall(function()
+            _0xa299._0xe08d.Events.DataEvent:FireServer("Item", "Selected", bought)
+        end)
+        _0xa299._0x8545:Notify("Auto Prog", "Bought and equipped " .. bought, 4, "check")
+    else
+        _0xa299._0x8545:Notify("Auto Prog",
+            "No weapon affordable - retrying in 2m", 3, "warning")
+    end
+
+    if startpos and _0xa299._0x396d.Character
+       and _0xa299._0x396d.Character:FindFirstChild("HumanoidRootPart") then
+        _0xa299._0xSTP(startpos)
+    end
+
+    return bought ~= nil
+end
 ---------------------------------------------------------------------
 -- THE WIPE
 --
@@ -28796,12 +28927,26 @@ end
 -- reincarnation that follows it - queueing after would apply to the life after
 -- next.
 --
--- Latched with .wiped so a refused reincarnation cannot re-fire on the next
--- tick; the latch clears when Auto Prog is toggled.
+-- NOT latched permanently, which was the bug. The latch used to be set to
+-- true before the attempt and only cleared when Auto Prog was toggled, so a
+-- reincarnation the server ignored disabled the whole feature for the rest of
+-- the session - you would sit at 28 with a wipe age of 25 and nothing would
+-- ever happen again.
+--
+-- Now it is a COOLDOWN, and success is confirmed rather than assumed: a real
+-- reincarnation resets your age, so the age is re-read afterwards and the
+-- cooldown is only made permanent if it actually dropped. If it did not, the
+-- attempt is retried on the next pass.
 ---------------------------------------------------------------------
+_0xa299._0xProgWipeRetry = 30   -- seconds before a failed wipe is tried again
+
 function _0xa299._0xProgWipe()
-    if _0xa299._0xProgBuild.wiped then return end
-    _0xa299._0xProgBuild.wiped = true
+    local B = _0xa299._0xProgBuild
+    if B.wiped then return end
+    if B.wipeAt and tick() < B.wipeAt then return end
+    B.wipeAt = tick() + _0xa299._0xProgWipeRetry
+
+    local ageBefore = _0xa299._0xGetPlayerAge()
 
     local DF = _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataFunction")
     local DE = _0xa299._0xe08d:WaitForChild("Events"):WaitForChild("DataEvent")
@@ -28816,12 +28961,39 @@ function _0xa299._0xProgWipe()
 
     _0xa299._0x8545:Notify("Auto Prog", "Wiping at age " .. tostring(_0xa299._0xProgBuild.wipeAge), 4, "warning")
 
-    -- The dialog option also calls GameManager:resetChakraPoints first, but
-    -- that is purely CLIENT-side bookkeeping for the chakra point UI - the
-    -- server never sees it, and GameManager is not reachable from here without
-    -- a gc scan, which would make this Volt-only. The remote below is the part
-    -- that actually reincarnates.
+    -- NewGame FIRST, then RequestReincarnation 0.16s later.
+    --
+    -- This is why the wipe did nothing: RequestReincarnation on its own is
+    -- refused. NewGame is what makes you eligible - the game's own menu flow
+    -- fires it and then sets LifeForce = 0 (client ~905), and reincarnation
+    -- wants LifeForce at 0. Without it the server just ignores the request,
+    -- which is exactly the "still age 28" symptom.
+    --
+    -- The sequence and the 0.16s gap are copied from the two places in this
+    -- file that already reincarnate successfully - Auto Wipe's reroll loop and
+    -- the dual-farm join - rather than invented.
+    --
+    -- The dialog option also calls GameManager:resetChakraPoints, but that is
+    -- purely CLIENT-side bookkeeping for the chakra point UI; the server never
+    -- sees it, and GameManager is not reachable here without a gc scan, which
+    -- would make this Volt-only.
+    pcall(function() DE:FireServer("NewGame") end)
+    task.wait(0.16)
     pcall(function() DF:InvokeServer("RequestReincarnation", "Male") end)
+
+    -- Did it actually take? A reincarnation resets the age, so that is the
+    -- check. Only latch for good on a confirmed wipe; otherwise say so and let
+    -- the cooldown bring us back.
+    task.wait(3)
+    local ageAfter = _0xa299._0xGetPlayerAge()
+    if ageAfter and ageBefore and ageAfter < ageBefore then
+        _0xa299._0xProgBuild.wiped = true
+        _0xa299._0x8545:Notify("Auto Prog",
+            ("Wiped - age %s -> %s"):format(tostring(ageBefore), tostring(ageAfter)), 5, "check")
+    else
+        _0xa299._0x8545:Notify("Auto Prog",
+            "Wipe did not take (still age " .. tostring(ageAfter) .. ") - retrying", 4, "warning")
+    end
 end
 
 _0xa299._0xAutoProg = {
@@ -29666,6 +29838,12 @@ function _0xa299._0xStartAutoProg()
             -- safespot doing nothing until the age ticks over. Both are
             -- internally rate-limited and latched, so running them on every
             -- pass through here is cheap.
+            -- Weapon first: the tree's Taijutsu path and the boss farm both
+            -- want one, and a rebuilt life starts on Fist. Internally
+            -- rate-limited and a no-op when already armed.
+            if _0xa299._0xProgBuild.autoWeapon then
+                pcall(_0xa299._0xProgBuyWeapon)
+            end
             pcall(_0xa299._0xProgGeninExam)
             pcall(_0xa299._0xProgSkillTreePass)
 
@@ -29700,6 +29878,24 @@ function _0xa299._0xStartAutoProg()
                         _0xa299._0x220a.applySpoofProtection()
                     end
 
+                end
+
+                -- WIPE AT AGE, checked EVERY pass rather than only on the
+                -- age-up transition.
+                --
+                -- That was the bug behind "I am 28 with a wipe age of 25 and
+                -- nothing happens": it only ever ran inside the
+                -- "newAge > currentAge" branch, so being ALREADY past it did
+                -- nothing. Enabling the toggle at 28, or having a wipe refused
+                -- once, meant waiting for the next age up - and if that one
+                -- also got swallowed, forever. A plain >= test on every pass
+                -- cannot miss, and _0xProgWipe has its own cooldown so this
+                -- does not spam.
+                if _0xa299._0xProgBuild.wipeAt25
+                   and newAge >= _0xa299._0xProgBuild.wipeAge then
+                    task.spawn(function()
+                        pcall(_0xa299._0xProgWipe)
+                    end)
                 end
 
                 -- TREE PASS, every time round the wait - not inside the point
@@ -29767,18 +29963,6 @@ function _0xa299._0xStartAutoProg()
 
                     -- A new age is a fresh shot at the exam.
                     _0xa299._0xProgBuild.examTried = false
-
-                    -- WIPE AT AGE. Checked here rather than in the main loop so
-                    -- it fires once, on the transition, instead of every tick
-                    -- we happen to be 25 or older. Ironline is queued inside
-                    -- _0xProgWipe, before the reincarnation that consumes it.
-                    if _0xa299._0xProgBuild.wipeAt25
-                       and newAge >= _0xa299._0xProgBuild.wipeAge then
-                        task.spawn(function()
-                            pcall(_0xa299._0xProgWipe)
-                        end)
-                        return
-                    end
                     _0xa299._0xAutoProgUpdateGUI("autoprog_age_up", tostring(_0xa299._0xAutoProg.currentAge), tostring(newAge))
                     _0xa299._0x8545:Notify("Auto Prog", "Aged up " .. _0xa299._0xAutoProg.currentAge .. " -> " .. newAge, 3, "check")
                     
@@ -29868,6 +30052,8 @@ _0xa299._0xAutoProg.toggle = _0xa299._0xAPRG:AddToggle("Enable Auto Prog", false
         _0xa299._0xProgBuild.examTried = false
         _0xa299._0xProgItemRetry = {}
         _0xa299._0xProgBuild.lastTreeRun = 0
+        _0xa299._0xProgBuild.wipeAt = 0
+        _0xa299._0xProgWeaponAt = 0
         _0xa299._0xStartAutoProg()
         _0xa299._0x8545:Notify("Auto Prog", "Auto Prog enabled", 3, "check")
     else
@@ -29891,6 +30077,13 @@ do
         for _, name in ipairs(Values) do picked[name] = true end
         _0xa299._0xProgBuild.paths = picked
     end)
+
+    g:AddDivider()
+
+    g:AddToggle("Auto Buy Weapon", false, function(Value)
+        _0xa299._0xProgBuild.autoWeapon = Value
+        if Value then _0xa299._0xProgWeaponAt = 0 end
+    end, {Flag = "ProgAutoWeapon", Type = "info", Text = "Buys you a weapon if you have none"})
 
     g:AddDivider()
 
@@ -32545,6 +32738,34 @@ end
 --     the real disc rather than a guess, and every ring is recorded whether
 --     or not it covers us at the time.
 ---------------------------------------------------------------------
+-- Where the floor actually is under a roam spot, or nil if nothing is there.
+--
+-- Cast from 20 studs up and 60 down, so it works whether the recorded y sits
+-- slightly above or below the true floor rather than assuming which.
+--
+-- NO height offset is added. Putting the root right on the surface leaves the
+-- character's lower half inside it for a moment and Roblox's own collision
+-- resolution pops it straight back out, standing - which is more reliable than
+-- guessing how high a root sits, and the reason the old flat +3 was wrong
+-- twice over: it both guessed, and guessed on top of a y that was already
+-- recorded from a standing character.
+function _0xa299._0xGaaraGroundAt(spot)
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.IgnoreWater = true
+    -- Ourselves, and Gaara's sand. See the note on aim() for why Debris
+    -- matters so much here.
+    params.FilterDescendantsInstances = {
+        _0xa299._0x396d.Character,
+        workspace:FindFirstChild("Debris"),
+    }
+
+    local hit = workspace:Raycast(spot + Vector3.new(0, 20, 0),
+        Vector3.new(0, -60, 0), params)
+    if not hit then return nil end
+    return hit.Position
+end
+
 _0xa299._0xGaaraRoamSpots = {
     Vector3.new(5900.4873046875, -173.05343627929688, 760.09521484375),
     Vector3.new(5794.697265625, -173.05343627929688, 702.1018676757812),
@@ -32635,6 +32856,121 @@ function _0xa299._0xGaaraRoamPick(bossHrp)
     end
     return best
 end
+---------------------------------------------------------------------
+-- ANTI-DESPAWN ROAM, VERSION 2 (temporary / experimental)
+--
+-- A different theory about what keeps Gaara from despawning, behind a toggle
+-- so it can be compared against the current roam rather than replacing it.
+--
+-- V1 (the ten spots): pick ONE spot, sit on it for 1s with the position
+-- re-pinned every frame, come back.
+-- V2 (this): cycle FOUR spots, hopping every 0.3s until 2.5s is up - so it
+-- gets round the four of them twice over - then hand positioning back.
+--
+-- The important difference is not the spot count. V2 writes CFrame ONCE per
+-- hop and then leaves the character completely alone: no re-pinning, no
+-- velocity reset, nothing held. Between hops the character falls, slides and
+-- settles exactly as a player's would, which is the point - V1's per-frame
+-- pinning produces a character that is unnaturally motionless at a fixed
+-- height, and that may be part of what the despawn check keys on.
+--
+-- Because nothing is pinned, the farm's own positioning has to stand aside
+-- entirely while this runs: one `hrp.CFrame = hover` from the Heartbeat would
+-- undo the hop on the very next frame. Hence the `running` flag rather than
+-- V1's "return a CFrame for the farm to apply" shape.
+---------------------------------------------------------------------
+_0xa299._0xGaaraRoamV2 = false     -- the toggle; V1 runs when this is off
+
+-- The user's measured positions. Used as given - note the y values vary by
+-- ~50 studs across them, unlike V1's ten which all sat at the arena floor's
+-- -173.05, so these are real standing spots at different heights and there is
+-- nothing to normalise.
+_0xa299._0xGaaraV2Spots = {
+    Vector3.new(6004.06787109375, -84.19886016845703, 511.98199462890625),
+    Vector3.new(5747.619140625, -128.16392517089844, 804.356201171875),
+    Vector3.new(5873.54296875, -122.72250366210938, 861.3633422851562),
+    Vector3.new(6003.638671875, -135.8954315185547, 822.1117553710938),
+}
+
+_0xa299._0xGaaraV2Total = 2.5      -- seconds the whole cycle lasts
+_0xa299._0xGaaraV2Step  = 0.3      -- seconds between hops
+_0xa299._0xGaaraV2Every = 10       -- seconds between cycle STARTS, as V1
+
+_0xa299._0xGaaraV2 = { running = false, nextAt = 0, abort = false }
+
+-- The cycle itself. Runs as its own task so the Heartbeat is never blocked.
+function _0xa299._0xGaaraV2Run()
+    local V = _0xa299._0xGaaraV2
+    local spots = _0xa299._0xGaaraV2Spots
+    if #spots == 0 then return end
+
+    V.running = true
+    V.abort = false
+
+    local deadline = tick() + _0xa299._0xGaaraV2Total
+    local i = 0
+
+    while tick() < deadline do
+        -- Bail on anything that means we should not be out here: the farm
+        -- stopping, the toggle being flipped, or a dodge starting.
+        if V.abort
+           or not _0xa299._0xGaaraRoamV2
+           or not (_0xa299._0x1915 and _0xa299._0x1915.farming) then
+            break
+        end
+
+        local char = _0xa299._0x396d.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if not hrp then break end
+
+        i = i + 1
+        local spot = spots[((i - 1) % #spots) + 1]
+
+        -- ONE write, then hands off. Deliberately no AssemblyLinearVelocity
+        -- reset and no hold loop - whatever momentum the character picks up is
+        -- left alone so the movement reads as a player's.
+        hrp.CFrame = CFrame.new(spot)
+
+        task.wait(_0xa299._0xGaaraV2Step)
+    end
+
+    -- nextAt is NOT set here. The tick claimed the next window before it
+    -- spawned us, so the cycle period is measured start-to-start like V1
+    -- rather than from whenever this happens to finish. An aborted cycle
+    -- therefore does not get to come back early either.
+    V.running = false
+end
+
+-- Returns true if the farm should leave positioning alone this frame.
+--
+-- Note it returns true WITHOUT giving the farm a CFrame, which is the whole
+-- point: the caller must simply not touch hrp.CFrame while this is true.
+function _0xa299._0xGaaraV2Tick(dangerActive)
+    local V = _0xa299._0xGaaraV2
+
+    -- A dodge outranks the roam, same as in V1. Abort rather than finishing
+    -- the cycle - these spots are not chosen for safety, and sitting on one
+    -- mid-coffin is exactly what the dodge exists to prevent.
+    if dangerActive then
+        if V.running then V.abort = true end
+        return false
+    end
+
+    if V.running then return true end
+
+    local now = tick()
+    if now >= V.nextAt then
+        -- Claim the next window before spawning. This is the only place
+        -- nextAt is written, so the period runs start-to-start, and it also
+        -- stops a second Heartbeat frame starting a second cycle.
+        V.nextAt = now + _0xa299._0xGaaraV2Every
+        task.spawn(_0xa299._0xGaaraV2Run)
+        return true
+    end
+
+    return false
+end
+
 
 -- Returns a CFrame to sit at this frame, or nil to let the farm hover.
 function _0xa299._0xGaaraRoamTick(bossHrp, dangerActive)
@@ -32654,10 +32990,28 @@ function _0xa299._0xGaaraRoamTick(bossHrp, dangerActive)
         return nil
     end
 
+    -- Stand ON the floor, not at a guessed height above a recorded y.
+    --
+    -- This used to be a flat spot + 3 studs. The spots were all recorded at
+    -- y -173.05, so that only lines up while the floor really is at exactly
+    -- that height - any dip, step or rubble and we end up hovering or part
+    -- way into it, which is also why a hover looks nothing like a player.
+    --
+    -- Debris is EXCLUDED from the cast, and that is the whole reason this
+    -- needs care rather than a one-line raycast: this is Gaara's arena, so
+    -- Debris is full of his sand - pillars, the coffin, rings. Cast without
+    -- excluding it during a move and the "floor" it finds is the top of a
+    -- sand pillar, which would park us on the attack instead of away from it.
     local function aim(spot)
         local look = (bossHrp and bossHrp.Parent) and bossHrp.Position
             or (spot + Vector3.new(0, 0, 1))
-        return CFrame.new(spot + Vector3.new(0, 3, 0), look)
+
+        -- Straight onto whatever is at the spot. Falls back to the recorded
+        -- position itself when the cast finds nothing, since that is where the
+        -- spot was measured from.
+        local at = _0xa299._0xGaaraGroundAt(spot) or spot
+
+        return CFrame.new(at, look)
     end
 
     -- ALREADY SITTING SOMEWHERE
@@ -35903,14 +36257,26 @@ function _0xa299._0xa94c()
         if config.customDanger == "Gaara" then
             dangerOverride = _0xa299._0xGaaraDodge(bossHrp)
 
-            -- Anti-despawn roam: periodically sit on an arena spot for a
-            -- second. Takes over positioning entirely while it runs, and
-            -- stands down whenever a dodge is active.
-            -- See _0xa299._0xGaaraRoamTick.
-            local roamCF = _0xa299._0xGaaraRoamTick(bossHrp, dangerOverride ~= nil)
-            if roamCF then
-                hrp.CFrame = roamCF
-                return
+            -- Anti-despawn roam. Two versions, picked by the toggle.
+            --
+            -- V2 does NOT hand back a CFrame - it drives the character from
+            -- its own task and only tells us to keep our hands off. That is
+            -- the entire reason it is shaped differently: writing a hover here
+            -- would undo its hop on the very next frame, and the thing being
+            -- tested is whether unpinned, physics-driven movement reads as
+            -- more authentic to the despawn check.
+            if _0xa299._0xGaaraRoamV2 then
+                if _0xa299._0xGaaraV2Tick(dangerOverride ~= nil) then
+                    return
+                end
+            else
+                -- V1: sit on one arena spot for a second, position re-pinned
+                -- every frame. See _0xa299._0xGaaraRoamTick.
+                local roamCF = _0xa299._0xGaaraRoamTick(bossHrp, dangerOverride ~= nil)
+                if roamCF then
+                    hrp.CFrame = roamCF
+                    return
+                end
             end
         end
 
@@ -36360,6 +36726,21 @@ _0xa299._0xf02e:AddToggle("Auto Hyper Roar", false, function(Value)
         end
     end)
 end, {Type = "info", Text = "Uses Hyper Roar while boss farming"})
+
+-- TEMPORARY / EXPERIMENTAL. Swaps Gaara's anti-despawn roam for the
+-- four-spot cycle: a hop every 0.3s for 2.5s, with the character left
+-- completely unpinned between them so it moves like a player rather than
+-- sitting motionless at a fixed height. Here to be compared against the
+-- current roam, not to replace it yet.
+_0xa299._0x1915.settings:AddToggle("Gaara Roam V2 (test)", false, function(Value)
+    _0xa299._0xGaaraRoamV2 = Value
+    -- Stop a cycle that is already mid-flight, so flipping this off hands
+    -- positioning straight back instead of after another 2.5s.
+    if not Value and _0xa299._0xGaaraV2.running then
+        _0xa299._0xGaaraV2.abort = true
+    end
+    _0xa299._0xGaaraV2.nextAt = 0
+end, {Flag = "GaaraRoamV2", Type = "warning", Text = "Moves between four spots in the Gaara fight instead of one"})
 
 -- TAILED BEASTS. All of this came over from the standalone Tailed Beast Farm
 -- when it was folded into the boss farm; the targeting and seal options get a
