@@ -29717,7 +29717,15 @@ function _0xa299._0xAutoProgCheckAndBreakPoints()
 end
 
 function _0xa299._0xStartAutoProg()
-    if _0xa299._0xAutoProg.connection then return end
+    -- Say so rather than returning in silence. A bare return here is what made
+    -- the restart bug invisible: the toggle read ON, nothing ran, and there was
+    -- no indication why. The slot is released synchronously in
+    -- _0xStopAutoProg now, so hitting this should mean a genuine double-start.
+    if _0xa299._0xAutoProg.connection then
+        _0xa299._0xAutoProgDebug("START_BLOCKED", "a run is already live")
+        _0xa299._0x8545:Notify("Auto Prog", "Already running", 2, "info")
+        return
+    end
     
     -- Force load into game if not loaded (FIRST thing before anything else)
     if not _0xa299._0xe08d.Loaded:FindFirstChild(_0xa299._0x396d.Name) then
@@ -29751,6 +29759,17 @@ function _0xa299._0xStartAutoProg()
         end
     end
     
+    -- Fresh run, fresh per-run state. _0x62f5 is the quest ABORT flag and
+    -- _0xStopAutoProg sets it true on the way out, so without clearing it here
+    -- the first quest of the new run can bail before it starts.
+    _0xa299._0x62f5 = false
+    _0xa299._0x8434_cooldown = 0
+    _0xa299._0xAutoProg.currentQuestIndex = 1
+    _0xa299._0xAutoProg.currentPointIndex = 1
+    _0xa299._0xAutoProg.alreadyBrokePoint = false
+    _0xa299._0xAutoProg.isPanicking = false
+    _0xa299._0xAutoProg.deferredQuests = {}
+
     _0xa299._0xAutoProgDebug("STARTING", "Quests: " .. #_0xa299._0xAutoProg.selectedQuests)
     
     if #_0xa299._0xAutoProg.selectedQuests == 0 then
@@ -30044,10 +30063,23 @@ function _0xa299._0xStopAutoProg()
     -- Don't task.cancel - let the quest exit naturally via _0x62f5 so its cleanup code runs
     -- (disconnects noclip, stops animations, etc.)
     -- The auto prog loop will also exit since .enabled = false
+    --
+    -- The connection slot is released IMMEDIATELY, and the delayed cancel
+    -- captures the thread it belongs to rather than re-reading the field.
+    --
+    -- Both halves of that were bugs. _0xStartAutoProg opens with
+    -- "if connection then return end", and this used to leave the field set
+    -- for five seconds - so toggling Auto Prog off and straight back on
+    -- returned instantly and started NOTHING, while .enabled was true and the
+    -- GUI sat frozen on whatever it last showed (the quest cooldown counter,
+    -- typically). And re-reading the field five seconds later meant that if a
+    -- restart HAD got through, the stale timer would cancel the new thread
+    -- instead of the old one.
+    local stopping = _0xa299._0xAutoProg.connection
+    _0xa299._0xAutoProg.connection = nil
     task.delay(5, function()
-        if _0xa299._0xAutoProg.connection then
-            pcall(function() task.cancel(_0xa299._0xAutoProg.connection) end)
-            _0xa299._0xAutoProg.connection = nil
+        if stopping then
+            pcall(function() task.cancel(stopping) end)
         end
     end)
     
