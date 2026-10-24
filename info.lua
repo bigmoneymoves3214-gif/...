@@ -28840,9 +28840,44 @@ end
 -- both fail the proximity check and look nothing like a real client.
 ---------------------------------------------------------------------
 _0xa299._0xProgWeaponOrder = { "Golden Zabunagi", "Silver Kunai", "Golden Asumai" }
-_0xa299._0xProgWeaponRetry = 120   -- seconds before retrying after a failed buy
-_0xa299._0xProgWeaponMinRyo = 35   -- do not even travel below this
+
+-- Shop prices, read off GameManager (Items[name].SalePrice - and SalePrice IS
+-- the buy price, the key vendor quotes it as "comes at a price of X Ryo").
+-- Here so the thresholds below track the order list instead of being guessed.
+_0xa299._0xProgWeaponPrice = {
+    ["Golden Zabunagi"] = 70,
+    ["Silver Kunai"] = 15,
+    ["Golden Asumai"] = 40,
+}
+
+-- Cheapest in the order: below this nothing at all is affordable, so there is
+-- no point making the trip. Was a hand-picked 35, which refused to buy at 20
+-- Ryo even though a Silver Kunai costs 15.
+_0xa299._0xProgWeaponMinRyo = math.huge
+for _, _0xwn in ipairs(_0xa299._0xProgWeaponOrder) do
+    local _0xwp = _0xa299._0xProgWeaponPrice[_0xwn]
+    if _0xwp and _0xwp < _0xa299._0xProgWeaponMinRyo then
+        _0xa299._0xProgWeaponMinRyo = _0xwp
+    end
+end
+if _0xa299._0xProgWeaponMinRyo == math.huge then _0xa299._0xProgWeaponMinRyo = 15 end
+
+-- Price of the FIRST choice - what we actually want. Used by the quest
+-- ordering, not by the buy: short of this, the run puts the Ryo quests first.
+_0xa299._0xProgWeaponWant = _0xa299._0xProgWeaponPrice[_0xa299._0xProgWeaponOrder[1]] or 70
+
+_0xa299._0xProgWeaponRetry = 120   -- after a real attempt that bought nothing
 _0xa299._0xProgWeaponAt = 0
+
+-- Separate, SHORT gate for the cheap look at our own data.
+--
+-- Being broke is not a failed purchase, and treating it as one was the bug:
+-- the 2 minute cooldown got burned by a check that never left the safespot, so
+-- finishing a quest with enough Ryo meant standing around unarmed for up to
+-- two more minutes. Now only a real trip to the Blacksmith starts that
+-- cooldown; a broke check just comes back in a few seconds.
+_0xa299._0xProgWeaponPollGap = 4
+_0xa299._0xProgWeaponPoll = 0
 
 -- Unarmed? CurrentWeapon reads "Fist" with nothing equipped.
 function _0xa299._0xProgUnarmed(data)
@@ -28851,7 +28886,68 @@ function _0xa299._0xProgUnarmed(data)
     return cw == "" or cw == "Fist" or cw == "nil"
 end
 
+-- Unarmed and cannot afford our first pick? Then Ryo is the bottleneck.
+-- Reads straight off local data, no remotes, so the quest ordering can call it
+-- freely.
+function _0xa299._0xProgNeedsRyoForWeapon()
+    if not _0xa299._0xProgBuild.autoWeapon then return false end
+
+    local data = _0xa299._0xLocalData and _0xa299._0xLocalData() or nil
+    if type(data) ~= "table" then return false end
+    if not _0xa299._0xProgUnarmed(data) then return false end
+
+    -- Owning one unequipped is not a money problem - the buy equips it.
+    for _, name in ipairs(_0xa299._0xProgWeaponOrder) do
+        if _0xa299._0xCountItem(data, name) > 0 then return false end
+    end
+
+    return (tonumber(data.Ryo) or 0) < _0xa299._0xProgWeaponWant
+end
+
+---------------------------------------------------------------------
+-- QUEST ORDER WHEN WE CANNOT AFFORD A WEAPON
+--
+-- These three do not go through the mission board: they are standing quests
+-- that are always there to be done, so they pay out without depending on what
+-- the board happens to be offering. Everything else can be deferred by a board
+-- that has no tile for it, which is exactly the wrong thing to be waiting on
+-- when the run is unarmed and broke.
+--
+-- Order is the user's: Passageway, then Snow Hostage, then Kurenai.
+---------------------------------------------------------------------
+_0xa299._0xProgNoBoardQuests = { "Passageway", "Snow Hostage", "Kurenai Genjutsu" }
+
+-- The list to actually walk this cycle.
+--
+-- Normally that is the selection as the user ordered it. Unarmed and short of
+-- the first weapon's price, the no-board quests are pulled to the front - the
+-- rest keep their relative order behind them. Nothing is added or dropped, so
+-- a quest the user did not pick still never runs.
+function _0xa299._0xProgQuestOrder()
+    local picked = _0xa299._0xAutoProg.selectedQuests
+    if not _0xa299._0xProgNeedsRyoForWeapon() then return picked end
+
+    local first, rest = {}, {}
+    for _, name in ipairs(_0xa299._0xProgNoBoardQuests) do
+        if table.find(picked, name) then table.insert(first, name) end
+    end
+    for _, name in ipairs(picked) do
+        if not table.find(first, name) then table.insert(rest, name) end
+    end
+    if #first == 0 then return picked end
+
+    for _, name in ipairs(rest) do table.insert(first, name) end
+    _0xa299._0xAutoProgDebug("RYO_FIRST", table.concat(first, ", "))
+    _0xa299._0x8545:Notify("Auto Prog",
+        "No weapon yet - doing the Ryo quests first", 3, "info")
+    return first
+end
+
 function _0xa299._0xProgBuyWeapon()
+    -- Cheap gate first. The expensive one only applies to a real attempt.
+    if (tick() - _0xa299._0xProgWeaponPoll) < _0xa299._0xProgWeaponPollGap then return false end
+    _0xa299._0xProgWeaponPoll = tick()
+
     if (tick() - _0xa299._0xProgWeaponAt) < _0xa299._0xProgWeaponRetry then return false end
 
     local data = _0xa299._0xLocalData and _0xa299._0xLocalData() or nil
@@ -28867,11 +28963,13 @@ function _0xa299._0xProgBuyWeapon()
     -- the Blacksmith just to be refused three times, and the retry would burn
     -- the 2 minute cooldown doing nothing.
     local ryo = tonumber(data.Ryo) or 0
-    if ryo <= _0xa299._0xProgWeaponMinRyo then
-        _0xa299._0xProgWeaponAt = tick()
+    if ryo < _0xa299._0xProgWeaponMinRyo then
+        -- Broke. NOT an attempt, so the 2 minute cooldown stays untouched and
+        -- the short poll brings us straight back the moment a quest pays out.
         return false
     end
 
+    -- From here it is a real attempt: travel to the shop and fire Pay.
     _0xa299._0xProgWeaponAt = tick()
 
     -- Already own one of them but just have it unequipped? Equip rather than
@@ -29907,22 +30005,35 @@ function _0xa299._0xStartAutoProg()
             end
             pcall(_0xa299._0xProgGeninExam)
             
-            _0xa299._0xAutoProgDebug("QUEST_LOOP", "Starting " .. #_0xa299._0xAutoProg.selectedQuests .. " quests")
+            -- Decided once per cycle, after the buy above has had its go, so
+            -- it sees the Ryo as it actually stands.
+            local questOrder = _0xa299._0xProgQuestOrder()
+
+            _0xa299._0xAutoProgDebug("QUEST_LOOP", "Starting " .. #questOrder .. " quests")
             _0xa299._0xAutoProg.alreadyBrokePoint = false
             -- Fresh age cycle: anything the board was not offering last time
             -- gets a clean chance, since an age up re-rolls everything anyway.
             _0xa299._0xAutoProg.deferredQuests = {}
             _0xa299._0xAutoProg.lastDeferredRetry = tick()
             _0xa299._0xAutoProgEquipWeapon()
-            for i, questName in ipairs(_0xa299._0xAutoProg.selectedQuests) do
+            for i, questName in ipairs(questOrder) do
                 if not _0xa299._0xAutoProgAlive(myRun) then break end
 
                 if not _0xa299._0xAutoProgWaitForSafety(myRun) then break end
 
                 _0xa299._0xAutoProg.currentQuestIndex = i
-                _0xa299._0xAutoProgUpdateGUI("autoprog_quest", questName, "(" .. i .. "/" .. #_0xa299._0xAutoProg.selectedQuests .. ")")
+                _0xa299._0xAutoProgUpdateGUI("autoprog_quest", questName, "(" .. i .. "/" .. #questOrder .. ")")
 
                 _0xa299._0xAutoProgExecuteQuest(questName)
+
+                -- Try the weapon again after EVERY quest, not just once at the
+                -- top of the cycle. A quest is where the Ryo comes from, so
+                -- this is the moment it may have become affordable - and the
+                -- rest of the quests go better armed. Gated to one look every
+                -- few seconds and a no-op once armed.
+                if _0xa299._0xProgBuild.autoWeapon then
+                    pcall(_0xa299._0xProgBuyWeapon)
+                end
 
                 -- The board was not offering this one. Do not write it off -
                 -- boards re-roll, so park it and come back once the quests
@@ -29935,7 +30046,7 @@ function _0xa299._0xStartAutoProg()
 
                 if not _0xa299._0xAutoProgAlive(myRun) then break end
                 
-                if i < #_0xa299._0xAutoProg.selectedQuests then
+                if i < #questOrder then
                     _0xa299._0xAutoProgDebug("COOLDOWN", "10s before next quest")
 
                     -- Parked at the safespot for 10 s, so let the game animate
@@ -29954,6 +30065,12 @@ function _0xa299._0xStartAutoProg()
                     for countdown = 10, 1, -1 do
                         if not _0xa299._0xAutoProgAlive(myRun) then break end
                         _0xa299._0xAutoProgUpdateGUI("autoprog_cooldown", tostring(countdown))
+
+                        -- Keep watching while we wait out the gap. The Ryo from
+                        -- the quest that just finished can land a moment late.
+                        if _0xa299._0xProgBuild.autoWeapon then
+                            pcall(_0xa299._0xProgBuyWeapon)
+                        end
                         
                         if _0xa299._0x396d.Character and _0xa299._0x396d.Character:FindFirstChild("HumanoidRootPart") then
                             _0xa299._0x396d.Character.HumanoidRootPart.CFrame = _0xa299._0xdde4()
@@ -29988,6 +30105,9 @@ function _0xa299._0xStartAutoProg()
             -- this is the idle window it wants, and it needs the shards the
             -- point breaking below produces.
             pcall(_0xa299._0xProgSkillTreePass)
+            if _0xa299._0xProgBuild.autoWeapon then
+                pcall(_0xa299._0xProgBuyWeapon)
+            end
 
             if _0xa299._0x396d.Character and _0xa299._0x396d.Character:FindFirstChild("HumanoidRootPart") then
                 _0xa299._0x396d.Character.HumanoidRootPart.CFrame = _0xa299._0xdde4()
@@ -30056,6 +30176,14 @@ function _0xa299._0xStartAutoProg()
                 -- Internally rate-limited to one pass per 30s, so this costs
                 -- a table lookup on most iterations.
                 pcall(_0xa299._0xProgSkillTreePass)
+
+                -- Same reasoning for the weapon: breaking a point above is a
+                -- Ryo sink, but quest payouts and drops land here too, and this
+                -- loop is where the run spends most of its time. Its own gate
+                -- keeps it to one look every few seconds.
+                if _0xa299._0xProgBuild.autoWeapon then
+                    pcall(_0xa299._0xProgBuyWeapon)
+                end
 
                 -- Go back for the missions the board was not offering.
                 --
