@@ -2748,6 +2748,20 @@ function _0xa299._0xTravelSweep(anchors, found, timeout)
     if got then return got end
 
     for _, anchor in ipairs(anchors or {}) do
+        -- CFrames are accepted as well as Vector3s.
+        --
+        -- This used to test Vector3 only, and anything else was skipped in
+        -- SILENCE. _0xProgSealingBells passes _0xSealingBellsPos, which is a
+        -- CFrame - the one exact, user-supplied position of the bells - so that
+        -- anchor was discarded and the sweep fell through to the four parkour
+        -- anchors instead, travelling to each in turn and streaming for a
+        -- couple of seconds apiece. That is the "it tried about ten times"
+        -- behaviour: one sweep over anchors that were never going to have the
+        -- bells next to them.
+        if typeof(anchor) == "CFrame" then
+            anchor = anchor.Position
+        end
+
         if typeof(anchor) == "Vector3" then
             -- In request range already? Cheapest outcome, no travel.
             pcall(function() _0xa299._0x396d:RequestStreamAroundAsync(anchor, 5) end)
@@ -27878,6 +27892,145 @@ _0xa299._0x5d7f = {
     busy = 0,              -- >0 while a loop is actively moving the character
 }
 
+---------------------------------------------------------------------
+-- KNOWN ORANGE TREES
+--
+-- The farm finds its trees with workspace:GetDescendants() looking for a
+-- FruitType Value of "Orange", which under v1550 streaming only ever sees the
+-- few trees replicated around wherever we are standing. So the farm worked the
+-- trees next to the safespot and nothing else.
+--
+-- These are recorded positions to TRAVEL to. _0xTravelSweep streams each one in
+-- on arrival, at which point the normal discovery above finds the tree and the
+-- existing harvest code takes over unchanged.
+--
+-- Mapped with tools/map_orange_trees.lua - fly the map, it records every tree
+-- it sees stream in. Empty is fine: the farm then behaves exactly as it did
+-- before, working whatever happens to be loaded.
+---------------------------------------------------------------------
+_0xa299._0xOrangeTrees = {
+    -- 19 trees, mapped 2026-10-24 with tools/map_orange_trees.lua.
+    --
+    -- The recorder logged 23 because four trees were seen twice: once as a
+    -- streamed shell, where only GetPivot() is available, and once properly
+    -- loaded with a MainBranch. A tree model's pivot sits 30-40 studs ABOVE its
+    -- trunk, which is past the 25 stud dedupe, so both readings were kept. The
+    -- model names in the report settle it - Tree95158, Tree81470, Tree36930 and
+    -- Tree45512 each appear twice - and the MainBranch reading is the one kept.
+    --
+    -- The nine that are still pivot-only are fine as they are: these positions
+    -- only decide where to TRAVEL so the tree streams in, and the harvest then
+    -- reads the real MainBranch off the instance. Being 40 studs high costs
+    -- nothing.
+    Vector3.new(-387.5, -204.5, 791.9),
+    Vector3.new(-56.3, -191.9, 381.5),
+    Vector3.new(-616.5, 12.1, 219.5),
+    Vector3.new(-619.5, 17.3, 360.5),
+    Vector3.new(241.0, -192.1, 1003.0),
+    Vector3.new(-314.5, 47.6, -378.4),
+    Vector3.new(-14.0, 119.6, -581.4),
+    Vector3.new(-525.7, 181.1, -941.8),
+    Vector3.new(451.9, 56.6, -1520.6),
+    Vector3.new(-71.2, 93.9, -1576.0),
+    Vector3.new(-122.4, 241.8, -2032.5),
+    Vector3.new(-1754.6, 129.2, -1923.1),
+    Vector3.new(-1285.5, 125.2, -2491.6),
+    Vector3.new(-2052.3, -10.8, -3264.4),
+    Vector3.new(-2087.4, -103.2, -1675.9),
+    Vector3.new(-3658.2, -22.2, -3424.1),
+    Vector3.new(-3632.0, 168.1, -4769.6),
+    Vector3.new(2629.8, 12.2, -786.0),
+    Vector3.new(3087.4, -69.3, -636.8),
+}
+
+---------------------------------------------------------------------
+-- THE OTHER HALF OF THE FARM
+--
+-- The farm does not only pick oranges: it waters Crops and then cooks and
+-- sells at a BowlHolder / FruitCooker. Those have the same streaming problem -
+-- _0x5f8a scans workspace:GetChildren() for Crops and _0xStation scans for the
+-- stations, so from a far safespot neither exists and the farm reported
+-- "Cooking station not loaded" instead of earning anything.
+--
+-- Mapped alongside the trees. The stations come in a set per village and
+-- _0xStations already names the three (Zen, Biyo, Sorythia); these are where
+-- they actually are.
+---------------------------------------------------------------------
+_0xa299._0xMapCrops = {
+    -- Two clusters. Five in the Sorythia fields, four up at the Zen farm.
+    Vector3.new(130.9, -31.9, -327.8),
+    Vector3.new(130.9, -31.9, -373.8),
+    Vector3.new(171.9, -31.9, -342.8),
+    Vector3.new(171.9, -31.9, -373.8),
+    Vector3.new(180.9, -31.9, -312.8),
+    Vector3.new(64.4, 97.7, -2294.2),
+    Vector3.new(64.4, 97.7, -2253.2),
+    Vector3.new(18.9, 97.7, -2262.2),
+    Vector3.new(34.4, 97.7, -2294.2),
+}
+
+-- Bowl holder and cooker sit within ~7 studs of each other in each village, so
+-- one anchor per village streams both in.
+_0xa299._0xMapStations = {
+    Vector3.new(-224.5, 103.4, 229.5),     -- Zen
+    Vector3.new(-792.2, -212.2, -510.2),   -- Biyo
+    Vector3.new(-38.1, -36.2, -359.9),     -- Sorythia
+}
+
+-- Seed the remembered-position table so the FIRST lookup aims its stream
+-- request at the right part of the map instead of at our own feet. Does not
+-- replace travelling - RequestStreamAroundAsync does not reach across the map -
+-- but it makes a nearby lookup succeed without one.
+do
+    local seed = {
+        BowlHolderZen = Vector3.new(-224.5, 103.4, 229.5),
+        FruitCookerZen = Vector3.new(-217.5, 103.1, 229.5),
+        BowlHolderBiyo = Vector3.new(-792.2, -212.2, -510.2),
+        FruitCookerBiyo = Vector3.new(-792.2, -212.5, -517.2),
+        BowlHolderSorythia = Vector3.new(-38.1, -36.2, -359.9),
+        FruitCookerSorythia = Vector3.new(-45.0, -36.5, -361.1),
+    }
+    _0xa299._0xWorldPos = _0xa299._0xWorldPos or {}
+    for name, pos in pairs(seed) do
+        if not _0xa299._0xWorldPos[name] then _0xa299._0xWorldPos[name] = pos end
+    end
+end
+
+-- Index of the next tree position to visit, so each pass continues round the
+-- map instead of restarting at the first one.
+_0xa299._0xOrangeTreeAt = 1
+
+-- Stream in the next known tree we have not harvested this cycle, so the
+-- discovery scan has something to find. Returns true if it travelled.
+function _0xa299._0xRyoNextKnownTree(runId)
+    local known = _0xa299._0xOrangeTrees
+    if #known == 0 then return false end
+
+    for _ = 1, #known do
+        if not _0xa299._0xRyoAlive(runId) then return false end
+
+        local idx = _0xa299._0xOrangeTreeAt
+        _0xa299._0xOrangeTreeAt = (idx % #known) + 1
+
+        local pos = known[idx]
+        if typeof(pos) == "CFrame" then pos = pos.Position end
+        if typeof(pos) == "Vector3" then
+            -- Travel, ask for the surroundings, give the stream a moment to
+            -- land. No verification scan here on purpose: walking
+            -- workspace:GetDescendants() is expensive and the harvest loop
+            -- below re-scans once per cycle anyway, so it will pick up whatever
+            -- arrived.
+            _0xa299._0xRyoBusy(1)
+            _0xa299._0xSTP(CFrame.new(pos + Vector3.new(0, 5, 0)))
+            pcall(function() _0xa299._0x396d:RequestStreamAroundAsync(pos, 5) end)
+            task.wait(0.6)
+            _0xa299._0xRyoBusy(-1)
+            return true
+        end
+    end
+    return false
+end
+
 -- Does this farm loop still own the farm?
 function _0xa299._0xRyoAlive(runId)
     if not _0xa299._0x5d7f.enabled then return false end
@@ -28054,6 +28207,18 @@ function _0xa299._0xb795()
                     _0xa299._0xe08d.Events.DataFunction:InvokeServer("SellFood", "Tangerina Fruit Bowl", 15, nil, _0xa299._0xDialogPart("TorchMesh"))
                 else
                     if not bowlthere then
+                        -- No crops in range? Go to a field we know about. They
+                        -- only exist while streamed in, so from a far safespot
+                        -- _0x5f8a always said no and the farm bought a Bowl
+                        -- instead of watering for one.
+                        if not _0xa299._0x5f8a() then
+                            _0xa299._0xRyoBusy(1)
+                            _0xa299._0xTravelSweep(_0xa299._0xMapCrops, function()
+                                return _0xa299._0x5f8a() or nil
+                            end, 1.5)
+                            _0xa299._0xRyoBusy(-1)
+                        end
+
                         if _0xa299._0x5f8a() then
                             for i, v in pairs(workspace:GetChildren()) do
                                 if v.Name == "Crops" and v.Transparency == 0 then
@@ -28070,6 +28235,18 @@ function _0xa299._0xb795()
                     end
 
                     local BowlHolder = _0xa299._0xBowlHolder()
+                    if not BowlHolder then
+                        -- Go to a village that has one. _0xStation only streams
+                        -- around where we stand, and RequestStreamAroundAsync
+                        -- does not reach across the map, so a safespot 2500
+                        -- studs away could never load a station - which is why
+                        -- this warned instead of the farm earning.
+                        _0xa299._0xRyoBusy(1)
+                        BowlHolder = _0xa299._0xTravelSweep(_0xa299._0xMapStations, function()
+                            return _0xa299._0xBowlHolder(0.5)
+                        end, 1.5)
+                        _0xa299._0xRyoBusy(-1)
+                    end
                     if not BowlHolder then
                         -- Station not streamed in. Skip rather than firing PlaceBowl /
                         -- AddFruit with a nil instance - a malformed remote call is the
@@ -28183,6 +28360,23 @@ function _0xa299._0xb795()
                 if v.Name == "FruitType" and v.Value == "Orange" then
                     table.insert(orangeTrees, v)
                 end
+            end
+
+            -- Everything in range already picked, or nothing in range at all?
+            -- Then move on to the next tree we know the position of and let the
+            -- next cycle's scan find it. Without this the farm only ever worked
+            -- the trees that happened to be streamed in where it was standing.
+            local anyLeft = false
+            for _, v in ipairs(orangeTrees) do
+                if not v:GetAttribute("orange") then anyLeft = true; break end
+            end
+            if not anyLeft and #_0xa299._0xOrangeTrees > 0 then
+                -- Deliberately NOT a continue. Falling through costs one cheap
+                -- pass over an already-marked list and then runs the attribute
+                -- reset at the bottom of the body, which is what lets a tree be
+                -- harvested again after it regrows. Skipping that would leave
+                -- every tree marked forever.
+                _0xa299._0xRyoNextKnownTree(myRun)
             end
 
             for _, v in ipairs(orangeTrees) do
