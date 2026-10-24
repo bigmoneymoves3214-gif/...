@@ -46696,7 +46696,18 @@ _0xa299._0x5a0f:AddButton("Unload Script", function()
         lib._isLoadingConfig = wasLoading
     end
 
-    _0xa299._0x1cc0 = false
+    -- Clear the load guard, so the script can be executed again.
+    --
+    -- This was `_0xa299._0x1cc0 = false`, which did nothing. The guard at the
+    -- top of the file is `if getgenv()._0x1cc0 then return end`, and
+    -- _0xa299's __newindex does a rawset - so that line created a LOCAL
+    -- shadow on _0xa299 while getgenv()._0x1cc0 stayed true. Re-executing
+    -- after an unload hit the guard and returned silently.
+    --
+    -- Cleared to nil rather than false so the key goes away entirely; the
+    -- guard treats both as falsy, and _0xa299._0x1cc0 then reads through its
+    -- __index fallback to _G instead of a stale shadow.
+    pcall(function() getgenv()._0x1cc0 = nil end)
 end)
 
 -- Auto Execute / Persistence
